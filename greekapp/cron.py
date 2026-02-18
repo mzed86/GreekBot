@@ -83,52 +83,103 @@ def run() -> None:
     conn = get_connection()
 
     try:
-        # --- Step 1: Process any incoming messages ---
+        # --- Step 1: Poll Telegram for new messages ---
         last_update_id = _get_last_update_id(conn)
-        updates = _poll_telegram(config, last_update_id)
+        try:
+            updates = _poll_telegram(config, last_update_id)
+        except Exception as exc:
+            print(f"Telegram polling failed, skipping to proactive: {exc}")
+            updates = []
 
+        # --- Step 2: Process each message individually ---
         for update in updates:
             last_update_id = update["update_id"]
-            msg = update.get("message", {})
-            text = msg.get("text", "")
-            chat_id = str(msg.get("chat", {}).get("id", ""))
+            try:
+                msg = update.get("message", {})
+                text = msg.get("text", "")
+                chat_id = str(msg.get("chat", {}).get("id", ""))
 
-            if chat_id != config.telegram_chat_id or not text:
-                continue
+                if chat_id != config.telegram_chat_id or not text:
+                    continue
 
-            print(f"Processing: {text[:60]}")
+                print(f"Processing: {text[:60]}")
 
-            if text.startswith("/"):
-                _handle_command(text, conn, config)
-            else:
-                from greekapp.assessor import assess_and_reply
-                result = assess_and_reply(conn, config, text)
-                print(f"  Replied: {result.get('reply', '')[:60]}")
-                if result.get("assessments"):
-                    for a in result["assessments"]:
-                        print(f"  {a['greek']}: quality={a['quality']}")
+                if text.startswith("/"):
+                    _handle_command(text, conn, config)
+                else:
+                    from greekapp.assessor import assess_and_reply
+                    result = assess_and_reply(conn, config, text)
+                    print(f"  Replied: {result.get('reply', '')[:60]}")
+                    if result.get("assessments"):
+                        for a in result["assessments"]:
+                            print(f"  {a['greek']}: quality={a['quality']}")
+            except Exception as exc:
+                print(f"Error processing update {last_update_id}: {exc}")
 
-        # Save our position so we don't reprocess messages
+        # Save our position so we don't reprocess messages (including failed ones)
         if updates:
             _set_last_update_id(conn, last_update_id)
             print(f"Processed {len(updates)} updates")
 
-        # --- Step 2: Maybe send a proactive message ---
-        from greekapp.scheduler import should_send_now
-        from greekapp.messenger import compose_and_send
+        # --- Step 3: Maybe send a proactive message ---
+        try:
+            from greekapp.scheduler import should_send_now
+            from greekapp.messenger import compose_and_send
 
-        if should_send_now(conn, config):
-            print("Scheduler says send...")
-            result = compose_and_send(conn, config)
-            if "error" in result:
-                print(f"  Error: {result['error']}")
+            if should_send_now(conn, config):
+                print("Scheduler says send...")
+                result = compose_and_send(conn, config)
+                if "error" in result:
+                    print(f"  Error: {result['error']}")
+                else:
+                    print(f"  Sent: {result['message'][:60]}")
             else:
-                print(f"  Sent: {result['message'][:60]}")
-        else:
-            print("Scheduler says skip this slot")
+                print("Scheduler says skip this slot")
+        except Exception as exc:
+            print(f"Proactive send failed: {exc}")
+
+        # --- Step 4: Maybe send weekly digest ---
+        _maybe_send_weekly_digest(conn, config)
 
     finally:
         conn.close()
+
+
+def _maybe_send_weekly_digest(conn, config: Config) -> None:
+    """Send a weekly progress digest on Sunday evening (18:00-18:29 London time)."""
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(config.timezone)
+        now = datetime.now(tz)
+
+        # Only on Sundays, 18:00-18:29 (one cron window)
+        if now.weekday() != 6 or now.hour != 18 or now.minute >= 30:
+            return
+
+        # Dedup key: weekly_digest:YYYY-WNN
+        week_key = f"weekly_digest:{now.strftime('%G-W%V')}"
+        existing = fetchone_dict(
+            conn,
+            "SELECT id FROM profile_notes WHERE category = ?",
+            (week_key,),
+        )
+        if existing:
+            return
+
+        from greekapp.report import generate_report
+        from greekapp.telegram import send_message
+
+        report_text = f"--- Weekly Digest ---\n\n{generate_report(conn)}"
+        send_message(config.telegram_bot_token, config.telegram_chat_id, report_text, parse_mode="")
+
+        # Mark as sent
+        execute(conn, "INSERT INTO profile_notes (category, content) VALUES (?, ?)", (week_key, "sent"))
+        conn.commit()
+        print(f"Sent weekly digest ({week_key})")
+    except Exception as exc:
+        print(f"Weekly digest failed: {exc}")
 
 
 def _handle_command(text: str, conn, config: Config) -> None:
