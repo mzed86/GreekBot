@@ -1,0 +1,40 @@
+# Your profile — the bot uses this to make messages feel personal.
+
+identity:
+  name: "Michael"
+  surname: "Zafiropoulos"
+  location: "London, UK"
+  native_language: "English"
+  family: "has a toddler"
+
+interests:
+  work:
+    - "software engineering"
+  hobbies:
+    - "guitar"
+    - "piano"
+    - "bass"
+    - "live music and concerts in London"
+  sports:
+    - "Manchester United fan"
+    - "Premier League football"
+    - "Champions League"
+  culture:
+    - "Greek heritage"
+    - "live gigs in London"
+  current_events:
+    - "Man Utd results and transfer news"
+    - "Premier League standings"
+    - "UK politics"
+    - "AI news and developments"
+
+conversation_style:
+  formality: "casual"
+  humor: true
+  emoji_level: "minimal"
+  greek_script: true
+
+scheduling:
+  preferred_times:
+    - "morning"
+    - "evening"
