@@ -3,33 +3,3 @@ databases:
     plan: free
     databaseName: greekapp
     user: greekapp
-
-services:
-  - type: web
-    name: greekapp
-    runtime: python
-    plan: free
-    buildCommand: pip install .[deploy]
-    startCommand: python -m greekapp.server
-    healthCheckPath: /health
-    envVars:
-      - key: TELEGRAM_BOT_TOKEN
-        sync: false
-      - key: TELEGRAM_CHAT_ID
-        sync: false
-      - key: ANTHROPIC_API_KEY
-        sync: false
-      - key: DATABASE_URL
-        fromDatabase:
-          name: greekapp-db
-          property: connectionString
-      - key: TIMEZONE
-        value: America/New_York
-      - key: DAILY_TARGET
-        value: "2"
-      - key: ACTIVE_HOURS_START
-        value: "9"
-      - key: ACTIVE_HOURS_END
-        value: "21"
-      - key: PYTHON_VERSION
-        value: "3.11"

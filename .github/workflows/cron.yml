@@ -1,0 +1,32 @@
+name: Greek Bot Cron
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'  # Every 30 minutes
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install .[deploy]
+
+      - name: Run cron
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TIMEZONE: ${{ secrets.TIMEZONE || 'America/New_York' }}
+          DAILY_TARGET: ${{ secrets.DAILY_TARGET || '2' }}
+          ACTIVE_HOURS_START: ${{ secrets.ACTIVE_HOURS_START || '9' }}
+          ACTIVE_HOURS_END: ${{ secrets.ACTIVE_HOURS_END || '21' }}
+        run: python -m greekapp.cron
