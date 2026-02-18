@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 
 from flask import Flask, request, jsonify
+
+logger = logging.getLogger(__name__)
 
 from greekapp.config import Config
 from greekapp.db import get_connection, init_db, fetchone_dict, fetchall_dicts
@@ -73,7 +76,8 @@ def webhook():
 
 def _handle_command(text: str, config: Config):
     """Handle /slash commands."""
-    cmd = text.strip().split()[0].lower()
+    # Strip @botname suffix that Telegram appends (e.g. /report@MyBot -> /report)
+    cmd = text.strip().split()[0].lower().split("@")[0]
     conn = get_connection()
 
     try:
@@ -94,6 +98,19 @@ def _handle_command(text: str, config: Config):
                 parse_mode="",
             )
             return jsonify({"ok": True})
+    except Exception:
+        logger.exception("Command %s failed", cmd)
+        try:
+            from greekapp.telegram import send_message
+            send_message(
+                config.telegram_bot_token,
+                config.telegram_chat_id,
+                f"Sorry, the {cmd} command hit an error. Check the logs.",
+                parse_mode="",
+            )
+        except Exception:
+            logger.exception("Failed to send error message for command %s", cmd)
+        return jsonify({"ok": True})
     finally:
         conn.close()
 
