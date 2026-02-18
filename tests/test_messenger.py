@@ -259,6 +259,38 @@ def test_rss_items_rich_network_error(monkeypatch):
     assert result == []
 
 
+def test_rss_items_rich_atom_feed(monkeypatch):
+    """_fetch_rss_items_rich handles Atom feeds (entry/published/content)."""
+    atom_body = """<?xml version="1.0" encoding="UTF-8"?>
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <title>Tribune</title>
+      <entry>
+        <title>Labour's Smear Operation</title>
+        <published>2026-02-18T10:00:00Z</published>
+        <content type="html">&lt;p&gt;An investigative piece.&lt;/p&gt;</content>
+      </entry>
+      <entry>
+        <title>Wrestling Against ICE</title>
+        <summary>Short summary here</summary>
+      </entry>
+    </feed>"""
+    import httpx
+
+    class FakeResp:
+        status_code = 200
+        text = atom_body
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: FakeResp())
+    items = _fetch_rss_items_rich("https://tribunemag.co.uk/feed")
+    assert len(items) == 2
+    assert items[0]["title"] == "Labour's Smear Operation"
+    assert items[0]["pub_date"] == "2026-02-18T10:00:00Z"
+    assert "<" not in items[0]["description"]
+    assert items[1]["title"] == "Wrestling Against ICE"
+    assert items[1]["description"] == "Short summary here"
+
+
 # --- build_generation_prompt political persona ---
 
 def test_prompt_contains_political_persona():

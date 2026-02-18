@@ -117,10 +117,11 @@ def _fetch_rss_headlines(query: str, max_results: int = 3) -> list[str]:
 
 _POLITICAL_FEEDS = [
     {"name": "Guardian UK Politics", "url": "https://www.theguardian.com/politics/rss", "scope": "uk", "tag": "Guardian"},
-    {"name": "BBC UK Politics", "url": "https://feeds.bbci.co.uk/news/politics/rss.xml", "scope": "uk", "tag": "BBC"},
+    {"name": "Novara Media", "url": "https://novaramedia.com/feed", "scope": "uk", "tag": "Novara"},
     {"name": "eKathimerini", "url": "https://www.ekathimerini.com/news/rss", "scope": "greece", "tag": "eKathimerini"},
     {"name": "POLITICO Europe", "url": "https://www.politico.eu/feed/", "scope": "eu", "tag": "POLITICO"},
-    {"name": "BBC World", "url": "https://feeds.bbci.co.uk/news/world/rss.xml", "scope": "eu", "tag": "BBC"},
+    {"name": "Tribune Magazine", "url": "https://tribunemag.co.uk/feed", "scope": "uk", "tag": "Tribune"},
+    {"name": "Democracy Now", "url": "https://www.democracynow.org/democracynow.rss", "scope": "eu", "tag": "DemocracyNow"},
 ]
 
 
@@ -133,16 +134,36 @@ def _fetch_rss_items_rich(url: str, max_results: int = 3) -> list[dict]:
         resp.raise_for_status()
         root = ET.fromstring(resp.text)
         items = []
-        for item in root.iter("item"):
-            title = item.findtext("title", "").strip()
-            pub_date = item.findtext("pubDate", "")
-            desc_raw = item.findtext("description", "")
+
+        # Detect Atom feeds (namespace-prefixed <entry> elements)
+        ns = ""
+        if root.tag.startswith("{"):
+            ns = root.tag.split("}")[0] + "}"
+        entries = list(root.iter(f"{ns}entry")) if ns else list(root.iter("entry"))
+        is_atom = len(entries) > 0
+
+        if is_atom:
+            elements = entries
+        else:
+            elements = list(root.iter("item"))
+
+        for elem in elements:
+            if is_atom:
+                title = elem.findtext(f"{ns}title", "").strip()
+                pub_date = elem.findtext(f"{ns}published", "") or elem.findtext(f"{ns}updated", "")
+                desc_raw = elem.findtext(f"{ns}content", "") or elem.findtext(f"{ns}summary", "")
+                source = ""
+            else:
+                title = elem.findtext("title", "").strip()
+                pub_date = elem.findtext("pubDate", "")
+                desc_raw = elem.findtext("description", "")
+                source = elem.findtext("source", "")
+
             # Strip HTML tags from description
             desc_clean = re.sub(r"<[^>]+>", "", desc_raw).strip()
             # Truncate to 150 chars
             if len(desc_clean) > 150:
                 desc_clean = desc_clean[:147] + "..."
-            source = item.findtext("source", "")
             if title:
                 items.append({
                     "title": title,
