@@ -27,7 +27,7 @@ def generate_report(conn) -> str:
     messages_out = fetchone_dict(conn, "SELECT COUNT(*) AS cnt FROM messages WHERE direction = 'out'")["cnt"]
     messages_in = fetchone_dict(conn, "SELECT COUNT(*) AS cnt FROM messages WHERE direction = 'in'")["cnt"]
 
-    corrections_count = fetchone_dict(conn, "SELECT COUNT(*) AS cnt FROM words WHERE tags LIKE 'correction:%'")["cnt"]
+    corrections_count = fetchone_dict(conn, "SELECT COUNT(*) AS cnt FROM words WHERE tags LIKE ?", ("correction:%",))["cnt"]
 
     sections.append(
         f"--- Progress ---\n"
@@ -79,10 +79,10 @@ def generate_report(conn) -> str:
     # --- Recent corrections ---
     corrections = fetchall_dicts(conn, """
         SELECT greek, english, tags FROM words
-        WHERE tags LIKE 'correction:%'
+        WHERE tags LIKE ?
         ORDER BY created_at DESC
         LIMIT 8
-    """)
+    """, ("correction:%",))
 
     if corrections:
         lines = ["--- Recent corrections ---"]
