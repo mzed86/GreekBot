@@ -5,13 +5,13 @@ databases:
     user: greekapp
 
 services:
-  - type: cron
-    name: greekapp-cron
+  - type: web
+    name: greekapp
     runtime: python
     plan: free
-    schedule: "*/30 * * * *"
     buildCommand: pip install .[deploy]
-    startCommand: python -m greekapp.cron
+    startCommand: python -m greekapp.server
+    healthCheckPath: /health
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
