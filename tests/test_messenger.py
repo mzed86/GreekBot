@@ -8,6 +8,8 @@ from greekapp.db import execute, get_connection, init_db
 from greekapp.messenger import (
     _build_search_topics,
     _fetch_rss_headlines,
+    _fetch_rss_items_rich,
+    _POLITICAL_FEEDS,
     build_generation_prompt,
     select_words,
 )
@@ -132,3 +134,136 @@ def test_rss_network_error(monkeypatch):
     monkeypatch.setattr(httpx, "get", _raise)
     result = _fetch_rss_headlines("test query")
     assert result == []
+
+
+# --- _fetch_rss_headlines backward compat ---
+
+def test_rss_headlines_returns_list_of_strings(monkeypatch):
+    """_fetch_rss_headlines must still return list[str] for web_search/assessor compat."""
+    xml_body = """<?xml version="1.0"?>
+    <rss><channel>
+      <item><title>Headline A</title><pubDate>Mon, 01 Jan 2024</pubDate></item>
+      <item><title>Headline B</title></item>
+    </channel></rss>"""
+    import httpx
+
+    class FakeResp:
+        status_code = 200
+        text = xml_body
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: FakeResp())
+    result = _fetch_rss_headlines("test")
+    assert isinstance(result, list)
+    assert all(isinstance(h, str) for h in result)
+    assert len(result) == 2
+
+
+# --- _POLITICAL_FEEDS registry ---
+
+def test_political_feeds_structure():
+    """Each feed must have name, url, scope, and tag."""
+    assert len(_POLITICAL_FEEDS) >= 3
+    for feed in _POLITICAL_FEEDS:
+        assert "name" in feed
+        assert "url" in feed
+        assert "scope" in feed
+        assert "tag" in feed
+        assert feed["scope"] in ("uk", "greece", "eu")
+
+
+# --- _fetch_rss_items_rich ---
+
+def test_rss_items_rich_returns_dicts(monkeypatch):
+    """_fetch_rss_items_rich returns list of dicts with expected keys."""
+    xml_body = """<?xml version="1.0"?>
+    <rss><channel>
+      <item>
+        <title>PM announces new policy</title>
+        <pubDate>Tue, 18 Feb 2026</pubDate>
+        <description>The Prime Minister unveiled a new policy today.</description>
+        <source>Guardian</source>
+      </item>
+    </channel></rss>"""
+    import httpx
+
+    class FakeResp:
+        status_code = 200
+        text = xml_body
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: FakeResp())
+    items = _fetch_rss_items_rich("https://example.com/rss")
+    assert len(items) == 1
+    item = items[0]
+    assert item["title"] == "PM announces new policy"
+    assert item["pub_date"] == "Tue, 18 Feb 2026"
+    assert item["description"] == "The Prime Minister unveiled a new policy today."
+    assert item["source"] == "Guardian"
+
+
+def test_rss_items_rich_strips_html(monkeypatch):
+    """HTML tags in <description> must be stripped."""
+    xml_body = """<?xml version="1.0"?>
+    <rss><channel>
+      <item>
+        <title>Test</title>
+        <description>&lt;p&gt;Bold &lt;b&gt;text&lt;/b&gt; here.&lt;/p&gt;</description>
+      </item>
+    </channel></rss>"""
+    import httpx
+
+    class FakeResp:
+        status_code = 200
+        text = xml_body
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: FakeResp())
+    items = _fetch_rss_items_rich("https://example.com/rss")
+    assert "<" not in items[0]["description"]
+    assert "Bold" in items[0]["description"]
+
+
+def test_rss_items_rich_truncates_description(monkeypatch):
+    """Descriptions longer than 150 chars must be truncated."""
+    long_desc = "A" * 300
+    xml_body = f"""<?xml version="1.0"?>
+    <rss><channel>
+      <item>
+        <title>Test</title>
+        <description>{long_desc}</description>
+      </item>
+    </channel></rss>"""
+    import httpx
+
+    class FakeResp:
+        status_code = 200
+        text = xml_body
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: FakeResp())
+    items = _fetch_rss_items_rich("https://example.com/rss")
+    assert len(items[0]["description"]) == 150
+    assert items[0]["description"].endswith("...")
+
+
+def test_rss_items_rich_network_error(monkeypatch):
+    """Network errors return empty list, not raise."""
+    import httpx
+
+    def _raise(*args, **kwargs):
+        raise httpx.ConnectError("no internet")
+
+    monkeypatch.setattr(httpx, "get", _raise)
+    result = _fetch_rss_items_rich("https://example.com/rss")
+    assert result == []
+
+
+# --- build_generation_prompt political persona ---
+
+def test_prompt_contains_political_persona():
+    """Prompt must include political opinion persona language."""
+    words = [CardState(word_id=1, greek="γεια", english="hello")]
+    prompt = build_generation_prompt({}, words, [])
+    assert "you take sides" in prompt.lower() or "take sides" in prompt
+    assert "not neutral" in prompt.lower() or "you're not neutral" in prompt

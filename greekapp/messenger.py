@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 from datetime import datetime, timezone
 
 import httpx
@@ -114,20 +115,83 @@ def _fetch_rss_headlines(query: str, max_results: int = 3) -> list[str]:
         return []
 
 
+_POLITICAL_FEEDS = [
+    {"name": "Guardian UK Politics", "url": "https://www.theguardian.com/politics/rss", "scope": "uk", "tag": "Guardian"},
+    {"name": "BBC UK Politics", "url": "https://feeds.bbci.co.uk/news/politics/rss.xml", "scope": "uk", "tag": "BBC"},
+    {"name": "eKathimerini", "url": "https://www.ekathimerini.com/news/rss", "scope": "greece", "tag": "eKathimerini"},
+    {"name": "POLITICO Europe", "url": "https://www.politico.eu/feed/", "scope": "eu", "tag": "POLITICO"},
+    {"name": "BBC World", "url": "https://feeds.bbci.co.uk/news/world/rss.xml", "scope": "eu", "tag": "BBC"},
+]
+
+
+def _fetch_rss_items_rich(url: str, max_results: int = 3) -> list[dict]:
+    """Fetch articles from a direct RSS feed URL with title, date, description, and source."""
+    import xml.etree.ElementTree as ET
+
+    try:
+        resp = httpx.get(url, timeout=8, follow_redirects=True)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.text)
+        items = []
+        for item in root.iter("item"):
+            title = item.findtext("title", "").strip()
+            pub_date = item.findtext("pubDate", "")
+            desc_raw = item.findtext("description", "")
+            # Strip HTML tags from description
+            desc_clean = re.sub(r"<[^>]+>", "", desc_raw).strip()
+            # Truncate to 150 chars
+            if len(desc_clean) > 150:
+                desc_clean = desc_clean[:147] + "..."
+            source = item.findtext("source", "")
+            if title:
+                items.append({
+                    "title": title,
+                    "pub_date": pub_date,
+                    "description": desc_clean,
+                    "source": source,
+                })
+            if len(items) >= max_results:
+                break
+        logger.info("Fetched %d items from %s", len(items), url)
+        return items
+    except Exception:
+        logger.exception("RSS fetch failed for URL: %s", url)
+        return []
+
+
+def _fetch_curated_political_items(max_feeds: int = 2) -> list[dict]:
+    """Sample curated political feeds and fetch rich items from each."""
+    selected = random.sample(_POLITICAL_FEEDS, min(max_feeds, len(_POLITICAL_FEEDS)))
+    results = []
+    for feed in selected:
+        items = _fetch_rss_items_rich(feed["url"], max_results=2)
+        for item in items:
+            item["tag"] = feed["tag"]
+        results.extend(items)
+    return results
+
+
 def fetch_news_context(profile: dict) -> str:
-    """Fetch real current headlines relevant to the user's interests via Google News RSS."""
+    """Fetch curated political items + Google News headlines for the user's interests."""
+    snippets: list[str] = []
+
+    # 1. Curated political items (2 feeds × 2 articles with descriptions)
+    political_items = _fetch_curated_political_items(max_feeds=2)
+    for item in political_items:
+        date_part = f" ({item['pub_date']})" if item["pub_date"] else ""
+        desc_part = f" — {item['description']}" if item["description"] else ""
+        snippets.append(f"[{item['tag']}] {item['title']}{date_part}{desc_part}")
+
+    # 2. Google News search (existing logic — 2 random profile topics × 3 headlines)
     topics = _build_search_topics(profile)
-    if not topics:
-        return ""
+    if topics:
+        selected = random.sample(topics, min(2, len(topics)))
+        for topic in selected:
+            headlines = _fetch_rss_headlines(topic, max_results=3)
+            for h in headlines:
+                snippets.append(f"[{topic}] {h}")
 
-    selected = random.sample(topics, min(2, len(topics)))
-    snippets = []
-    for topic in selected:
-        headlines = _fetch_rss_headlines(topic, max_results=3)
-        for h in headlines:
-            snippets.append(f"[{topic}] {h}")
-
-    return "\n".join(snippets[:8]) if snippets else ""
+    return "\n".join(snippets[:10]) if snippets else ""
 
 
 def web_search(query: str, max_results: int = 5) -> str:
@@ -160,7 +224,7 @@ def build_generation_prompt(
 
     return f"""You are a Greek friend texting in Greek. Write ENTIRELY in Greek. No English at all.
 
-You are texting a friend who is learning Greek. They understand a lot already. Write to them the way you'd text any Greek friend — naturally, casually, all in Greek.
+You are texting a friend who is learning Greek. They understand a lot already. Write to them the way you'd text any Greek friend — naturally, casually, all in Greek. You follow UK, Greek, and EU politics closely — you have real opinions, you take sides, you're not neutral.
 
 ABOUT THEM:
 {profile_text}
@@ -179,10 +243,11 @@ RULES:
 - Match the time of day naturally
 - Warm, casual tone — you're friends
 - Keep it to plain text (no markdown, no HTML tags)
+- If there's political news in the NEWS CONTEXT, share a sharp take — say what you actually think, pick a side, react like a real person
 
 {f"RECENT CONVERSATION (for continuity):{chr(10)}{history_text}" if history_text else "This is the start of your conversation. Send a friendly opener."}
 
-{f"NEWS CONTEXT (use this to make your message topical — mention a result, a headline, an upcoming event):{chr(10)}{news_context}" if news_context else ""}
+{f"NEWS CONTEXT (pick the most interesting item and react to it with an actual opinion — don't just report it, respond to it):{chr(10)}{news_context}" if news_context else ""}
 
 Write your message now. Just the message text, nothing else."""
 

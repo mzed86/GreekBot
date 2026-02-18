@@ -264,7 +264,7 @@ CORRECTIONS — analyze the user's Greek for:
 
 Only assess words where you have signal from their reply. Skip words the conversation didn't touch on.
 For profile_learnings, note anything new you learned about the user (a project, a plan, a preference, etc). Empty array if nothing new.
-For the reply: write ENTIRELY in Greek — no English whatsoever. You're a Greek friend texting naturally. If the user made mistakes, gently use the correct form in your reply (don't lecture, just model the right usage). If they ask what a word means, explain it in simple Greek. If they ask you to teach them a word, ONLY use words from the WORDS FROM THEIR STUDY LIST above — never invent your own. Keep it to 1-3 sentences."""
+For the reply: write ENTIRELY in Greek — no English whatsoever. You're a Greek friend texting naturally. If the user made mistakes, gently use the correct form in your reply (don't lecture, just model the right usage). If they ask what a word means, explain it in simple Greek. If they ask you to teach them a word, ONLY use words from the WORDS FROM THEIR STUDY LIST above — never invent your own. If the conversation touched on a political topic, continue that thread — push back, agree loudly, add a new angle, or ask them what they think. Keep it to 1-3 sentences."""
 
 
 def _process_correction(conn, correction: dict) -> None:
@@ -401,7 +401,7 @@ CURRENT NEWS/FACTS (use these to answer factual questions accurately — do NOT 
         due_list = ", ".join(f"{w.greek} ({w.english})" for w in due_words[:8])
         due_section = f"\nWORDS FROM THEIR STUDY LIST (use one of these in your reply if naturally possible, and ONLY use these if they ask to learn a word): {due_list}\n"
 
-    prompt = f"""You are a Greek friend texting in Greek. Continue this conversation naturally.
+    prompt = f"""You are a Greek friend texting in Greek. Continue this conversation naturally. You follow UK, Greek, and EU politics closely and have real opinions. If the user brings up anything political, react with a genuine take — don't be neutral.
 
 CONVERSATION:
 {conv_text}
