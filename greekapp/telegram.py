@@ -13,9 +13,12 @@ def _url(token: str, method: str) -> str:
 
 def send_message(token: str, chat_id: str, text: str, parse_mode: str = "HTML") -> dict:
     """Send a message via Telegram. Returns the API response."""
+    payload: dict = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     resp = httpx.post(
         _url(token, "sendMessage"),
-        json={"chat_id": chat_id, "text": text, "parse_mode": parse_mode},
+        json=payload,
         timeout=15,
     )
     resp.raise_for_status()

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 from datetime import datetime, timezone
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from greekapp.config import Config
 from greekapp.db import execute, fetchall_dicts, fetchone_dict, ph
@@ -101,8 +104,13 @@ def _fetch_rss_headlines(query: str, max_results: int = 3) -> list[str]:
                 headlines.append(f"{title} ({pub_date})" if pub_date else title)
             if len(headlines) >= max_results:
                 break
+        if not headlines:
+            logger.warning("Google News RSS returned no results for query: %s", query)
+        else:
+            logger.info("Fetched %d headlines for query: %s", len(headlines), query)
         return headlines
     except Exception:
+        logger.exception("Google News RSS search failed for query: %s", query)
         return []
 
 
