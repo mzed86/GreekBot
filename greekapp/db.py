@@ -86,7 +86,13 @@ def fetchone_dict(conn, sql: str, params=()) -> dict | None:
 
 def execute(conn, sql: str, params=()):
     """Execute a statement with placeholder conversion."""
-    conn.execute(ph(sql), params)
+    sql = ph(sql)
+    if _is_postgres():
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        cur.close()
+    else:
+        conn.execute(sql, params)
 
 
 def init_db() -> None:

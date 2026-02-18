@@ -11,7 +11,7 @@ from rich.table import Table
 
 load_dotenv()
 
-from greekapp.db import get_connection, init_db
+from greekapp.db import get_connection, init_db, fetchall_dicts, fetchone_dict
 from greekapp.importer import import_csv
 from greekapp.srs import CardState, load_due_cards, record_review
 
@@ -76,14 +76,16 @@ def words(tag: str | None) -> None:
     """List all loaded vocabulary."""
     conn = get_connection()
     if tag:
-        rows = conn.execute(
+        rows = fetchall_dicts(
+            conn,
             "SELECT greek, english, tags FROM words WHERE tags LIKE ? ORDER BY greek",
             (f"%{tag}%",),
-        ).fetchall()
+        )
     else:
-        rows = conn.execute(
-            "SELECT greek, english, tags FROM words ORDER BY greek"
-        ).fetchall()
+        rows = fetchall_dicts(
+            conn,
+            "SELECT greek, english, tags FROM words ORDER BY greek",
+        )
 
     table = Table(title=f"Vocabulary ({len(rows)} words)")
     table.add_column("Greek", style="cyan")
@@ -101,22 +103,20 @@ def stats() -> None:
     """Show learning progress."""
     conn = get_connection()
 
-    total = conn.execute("SELECT COUNT(*) FROM words").fetchone()[0]
-    reviewed = conn.execute(
-        "SELECT COUNT(DISTINCT word_id) FROM reviews"
-    ).fetchone()[0]
-    total_reviews = conn.execute("SELECT COUNT(*) FROM reviews").fetchone()[0]
+    total = fetchone_dict(conn, "SELECT COUNT(*) AS cnt FROM words")["cnt"]
+    reviewed = fetchone_dict(conn, "SELECT COUNT(DISTINCT word_id) AS cnt FROM reviews")["cnt"]
+    total_reviews = fetchone_dict(conn, "SELECT COUNT(*) AS cnt FROM reviews")["cnt"]
 
-    mastered = conn.execute("""
-        SELECT COUNT(*) FROM (
+    mastered = fetchone_dict(conn, """
+        SELECT COUNT(*) AS cnt FROM (
             SELECT word_id, interval
             FROM reviews r1
             WHERE reviewed_at = (
                 SELECT MAX(reviewed_at) FROM reviews r2 WHERE r2.word_id = r1.word_id
             )
             AND interval >= 21
-        )
-    """).fetchone()[0]
+        ) sub
+    """)["cnt"]
 
     console.print(f"\n[bold]Progress[/]")
     console.print(f"  Total words:    {total}")
@@ -200,9 +200,9 @@ def _handle_bot_command(text: str, conn, config) -> None:
         console.print(f"[green]Sent report[/]")
 
     elif cmd == "/stats":
-        total = conn.execute("SELECT COUNT(*) FROM words").fetchone()[0]
-        reviewed = conn.execute("SELECT COUNT(DISTINCT word_id) FROM reviews").fetchone()[0]
-        total_reviews = conn.execute("SELECT COUNT(*) FROM reviews").fetchone()[0]
+        total = fetchone_dict(conn, "SELECT COUNT(*) AS cnt FROM words")["cnt"]
+        reviewed = fetchone_dict(conn, "SELECT COUNT(DISTINCT word_id) AS cnt FROM reviews")["cnt"]
+        total_reviews = fetchone_dict(conn, "SELECT COUNT(*) AS cnt FROM reviews")["cnt"]
         text = f"Total words: {total}\nSeen: {reviewed}\nReviews: {total_reviews}"
         send_message(config.telegram_bot_token, config.telegram_chat_id, text, parse_mode="")
         console.print(f"[green]Sent stats[/]")
