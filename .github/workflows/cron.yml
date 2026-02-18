@@ -25,7 +25,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          TIMEZONE: ${{ secrets.TIMEZONE || 'America/New_York' }}
+          TIMEZONE: ${{ secrets.TIMEZONE || 'Europe/London' }}
           DAILY_TARGET: ${{ secrets.DAILY_TARGET || '2' }}
           ACTIVE_HOURS_START: ${{ secrets.ACTIVE_HOURS_START || '9' }}
           ACTIVE_HOURS_END: ${{ secrets.ACTIVE_HOURS_END || '21' }}

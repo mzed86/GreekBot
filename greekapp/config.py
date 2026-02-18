@@ -22,7 +22,7 @@ class Config:
     database_url: str = ""
 
     # Scheduling
-    timezone: str = "America/New_York"
+    timezone: str = "Europe/London"
     daily_target: int = 2  # messages per day
     active_hours_start: int = 9   # earliest hour to send (24h)
     active_hours_end: int = 21    # latest hour to send (24h)
@@ -41,7 +41,7 @@ class Config:
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
             database_url=os.getenv("DATABASE_URL", ""),
-            timezone=os.getenv("TIMEZONE", "America/New_York"),
+            timezone=os.getenv("TIMEZONE", "Europe/London"),
             daily_target=int(os.getenv("DAILY_TARGET", "2")),
             active_hours_start=int(os.getenv("ACTIVE_HOURS_START", "9")),
             active_hours_end=int(os.getenv("ACTIVE_HOURS_END", "21")),
