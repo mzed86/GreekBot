@@ -1,5 +1,6 @@
 """Tests for the assessment module — JSON parsing, word matching, context guessing."""
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import greekapp.db as db_module
 from greekapp.db import execute, get_connection, init_db
 from greekapp.assessor import (
     _find_vocab_words_in_text,
+    _get_recent_outgoing_words,
     _guess_english_from_context,
     _parse_json_lenient,
 )
@@ -76,6 +78,8 @@ def test_parse_json_with_newlines_in_strings():
 def _add_word(conn, greek, english):
     execute(conn, "INSERT INTO words (greek, english) VALUES (?, ?)", (greek, english))
     conn.commit()
+    from greekapp.db import fetchone_dict
+    return fetchone_dict(conn, "SELECT id FROM words WHERE greek = ?", (greek,))["id"]
 
 
 def test_find_words_basic_match():
@@ -135,3 +139,84 @@ def test_guess_english_diladi_pattern():
 def test_guess_english_no_match():
     result = _guess_english_from_context("Αυτό είναι ένα παράδειγμα", "παράδειγμα")
     assert result == "(from conversation)"
+
+
+# --- _get_recent_outgoing_words (seed message anchoring) ---
+
+def _add_outgoing_msg(conn, word_ids, is_seed=False):
+    """Add an outgoing message, optionally with a send_log entry (seed)."""
+    word_ids_json = json.dumps(word_ids) if word_ids else None
+    execute(
+        conn,
+        "INSERT INTO messages (direction, body, target_word_ids) VALUES (?, ?, ?)",
+        ("out", "test message", word_ids_json),
+    )
+    conn.commit()
+    from greekapp.db import fetchone_dict
+    msg_id = fetchone_dict(conn, "SELECT id FROM messages ORDER BY id DESC LIMIT 1")["id"]
+    if is_seed:
+        execute(conn, "INSERT INTO send_log (sent_date, message_id) VALUES (?, ?)", ("2026-02-19", msg_id))
+        conn.commit()
+    return msg_id
+
+
+def test_seed_words_always_included():
+    """Seed message words survive being pushed out of the recent-message window."""
+    conn = get_connection()
+    w1 = _add_word(conn, "πολιτική", "politics")
+    w2 = _add_word(conn, "οικονομία", "economy")
+    w3 = _add_word(conn, "εκπαίδευση", "education")
+
+    # Seed message with target words
+    _add_outgoing_msg(conn, [w1, w2, w3], is_seed=True)
+
+    # 5 subsequent reply messages (no target words) — push seed out of window
+    for _ in range(5):
+        _add_outgoing_msg(conn, None, is_seed=False)
+
+    words = _get_recent_outgoing_words(conn)
+    found_ids = {w["id"] for w in words}
+    assert w1 in found_ids
+    assert w2 in found_ids
+    assert w3 in found_ids
+    conn.close()
+
+
+def test_seed_words_plus_taught_words():
+    """Both seed words and explicitly taught words from replies are included."""
+    conn = get_connection()
+    w1 = _add_word(conn, "δημοκρατία", "democracy")
+    w2 = _add_word(conn, "ελευθερία", "freedom")
+
+    # Seed message with w1
+    _add_outgoing_msg(conn, [w1], is_seed=True)
+    # Reply that explicitly taught w2
+    _add_outgoing_msg(conn, [w2], is_seed=False)
+
+    words = _get_recent_outgoing_words(conn)
+    found_ids = {w["id"] for w in words}
+    assert w1 in found_ids
+    assert w2 in found_ids
+    conn.close()
+
+
+def test_no_seed_message_falls_back_to_recent():
+    """Without a seed message, recent outgoing messages are still used."""
+    conn = get_connection()
+    w1 = _add_word(conn, "γλώσσα", "language")
+
+    # No seed — just a regular outgoing message
+    _add_outgoing_msg(conn, [w1], is_seed=False)
+
+    words = _get_recent_outgoing_words(conn)
+    found_ids = {w["id"] for w in words}
+    assert w1 in found_ids
+    conn.close()
+
+
+def test_empty_outgoing_returns_empty():
+    """No outgoing messages at all returns empty list."""
+    conn = get_connection()
+    words = _get_recent_outgoing_words(conn)
+    assert words == []
+    conn.close()

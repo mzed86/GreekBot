@@ -85,8 +85,25 @@ def _maybe_search(user_reply: str, profile: dict) -> str:
     return results
 
 
-def _get_recent_outgoing_words(conn, limit: int = 3) -> list[dict]:
-    """Get words from recently sent messages for assessment."""
+def _get_recent_outgoing_words(conn, limit: int = 5) -> list[dict]:
+    """Get words from recently sent messages for assessment.
+
+    Always includes words from the most recent proactive (seed) message
+    (identified via send_log), so original teaching targets are never
+    pushed out of the assessment window during multi-exchange conversations.
+    Also includes any explicitly taught words from recent conversational replies.
+    """
+    # 1. Always include the most recent seed message (from compose_and_send)
+    seed_msg = fetchone_dict(
+        conn,
+        """SELECT m.target_word_ids FROM messages m
+           JOIN send_log sl ON sl.message_id = m.id
+           WHERE m.direction = 'out' AND m.target_word_ids IS NOT NULL
+           ORDER BY m.created_at DESC
+           LIMIT 1""",
+    )
+
+    # 2. Also get recent conversational replies (for explicitly taught words)
     recent = fetchall_dicts(
         conn,
         """SELECT target_word_ids FROM messages
@@ -97,6 +114,16 @@ def _get_recent_outgoing_words(conn, limit: int = 3) -> list[dict]:
     )
 
     word_ids = set()
+
+    # Seed words always included — these are the intentional teaching targets
+    if seed_msg:
+        try:
+            ids = json.loads(seed_msg["target_word_ids"])
+            word_ids.update(ids)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # Recent reply words (now only explicitly taught words, not incidental matches)
     for msg in recent:
         try:
             ids = json.loads(msg["target_word_ids"])
@@ -512,7 +539,7 @@ def _guess_english_from_context(text: str, greek_word: str) -> str:
 
 
 def _record_and_send_reply(conn, config: Config, reply_text: str) -> None:
-    """Record reply in DB and send via Telegram. Auto-tags vocab words used."""
+    """Record reply in DB and send via Telegram. Tags explicitly taught vocab words only."""
     from greekapp.telegram import send_message
 
     tg_resp = send_message(
@@ -523,13 +550,11 @@ def _record_and_send_reply(conn, config: Config, reply_text: str) -> None:
     )
     telegram_msg_id = tg_resp.get("result", {}).get("message_id")
 
-    # Find taught words (quoted/explained) and add to vocab if new
+    # Only tag words that were explicitly taught (quoted/explained) in the reply.
+    # Don't scan for incidental vocab matches — those dilute the target word pool
+    # and push original teaching targets out of the assessment window.
     taught_ids = _extract_taught_words_from_reply(conn, reply_text)
-    # Also find existing vocab words used in the reply
-    existing_ids = _find_vocab_words_in_text(conn, reply_text)
-    # Merge — taught words take priority
-    all_ids = list(dict.fromkeys(taught_ids + existing_ids))
-    word_ids_json = json.dumps(all_ids) if all_ids else None
+    word_ids_json = json.dumps(taught_ids) if taught_ids else None
 
     execute(
         conn,
