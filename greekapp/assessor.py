@@ -208,10 +208,13 @@ def _build_assessment_prompt(
     """Build prompt for Claude to assess understanding + extract learnings."""
     profile_text = profile_to_prompt_text(profile)
 
-    word_list = "\n".join(
-        f"  - {w['greek']} = {w['english']} (word_id: {w['id']})"
-        for w in words
-    )
+    if words:
+        word_list = "\n".join(
+            f"  - {w['greek']} = {w['english']} (word_id: {w['id']})"
+            for w in words
+        )
+    else:
+        word_list = "  (none — return an empty word_assessments array, but still check for corrections)"
 
     due_section = ""
     if due_words:
@@ -291,7 +294,9 @@ CORRECTIONS — analyze the user's Greek for:
 
 Only assess words where you have signal from their reply. Skip words the conversation didn't touch on.
 For profile_learnings, note anything new you learned about the user (a project, a plan, a preference, etc). Empty array if nothing new.
-For the reply: write ENTIRELY in Greek — no English whatsoever. You're a Greek friend texting naturally. If the user made mistakes, gently use the correct form in your reply (don't lecture, just model the right usage). If they ask what a word means, explain it in simple Greek. If they ask you to teach them a word, ONLY use words from the WORDS FROM THEIR STUDY LIST above — never invent your own. If the conversation touched on a political topic, continue that thread — push back, agree loudly, add a new angle, or ask them what they think. Keep it to 1-3 sentences."""
+For the reply: write ENTIRELY in Greek — no English whatsoever. You're a Greek friend texting naturally.
+IMPORTANT — if the user made Greek mistakes (vocabulary, grammar, or spelling), you MUST briefly correct them at the START of your reply before continuing the conversation. Use a concise format like: "* σχολείο, όχι σχολό" or "* θέλω να πάω, όχι θέλω να πήγω". Then continue chatting naturally. Don't skip mistakes — pointing them out is how they learn.
+If they ask what a word means, explain it in simple Greek. If they ask you to teach them a word, ONLY use words from the WORDS FROM THEIR STUDY LIST above — never invent your own. If the conversation touched on a political topic, continue that thread — push back, agree loudly, add a new angle, or ask them what they think. Keep it to 1-3 sentences."""
 
 
 def _process_correction(conn, correction: dict) -> None:
@@ -352,9 +357,8 @@ def assess_and_reply(conn, config: Config, user_reply: str) -> dict:
     from greekapp.srs import load_due_cards
     due_words = load_due_cards(conn, limit=10)
 
-    # If no words to assess, just generate a reply
-    if not words:
-        return _simple_reply(conn, config, user_reply, conversation, profile, search_context, due_words)
+    # Always use the full assessment flow so corrections are detected
+    # even when there are no target words to assess.
 
     # Ask Claude to assess + reply
     import anthropic
@@ -377,8 +381,14 @@ def assess_and_reply(conn, config: Config, user_reply: str) -> dict:
     assessments = data.get("word_assessments", [])
     for assessment in assessments:
         try:
+            quality = assessment["quality"]
+            # Skip "ignored" (quality=1) — the word wasn't relevant to this
+            # exchange, so recording a review would wrongly reset SRS progress.
+            # In conversation, "ignored" means "not discussed", not "failed recall".
+            if quality == 1:
+                continue
             card = _get_word_card_state(conn, assessment["word_id"])
-            record_review(conn, card, assessment["quality"])
+            record_review(conn, card, quality)
         except (ValueError, KeyError):
             continue
 
@@ -436,7 +446,9 @@ CONVERSATION:
 ABOUT THEM:
 {profile_text}
 {search_section}{due_section}
-Reply in 1-3 sentences ENTIRELY in Greek. No English at all. If they ask what a word means, explain it in simple Greek. If they ask a factual question, use the NEWS/FACTS above to answer accurately. If they ask you to teach them a word, ONLY pick from the WORDS FROM THEIR STUDY LIST above — never invent your own. Just the message, nothing else."""
+Reply in 1-3 sentences ENTIRELY in Greek. No English at all.
+IMPORTANT — if the user made Greek mistakes (vocabulary, grammar, or spelling), briefly correct them at the START of your reply like: "* σχολείο, όχι σχολό" then continue chatting. Don't skip mistakes — pointing them out is how they learn.
+If they ask what a word means, explain it in simple Greek. If they ask a factual question, use the NEWS/FACTS above to answer accurately. If they ask you to teach them a word, ONLY pick from the WORDS FROM THEIR STUDY LIST above — never invent your own. Just the message, nothing else."""
 
     import anthropic
     client = anthropic.Anthropic(api_key=config.anthropic_api_key)
