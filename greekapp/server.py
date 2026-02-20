@@ -2,7 +2,7 @@
 
 Runs a minimal Flask server for health checks (keeps the free tier alive)
 and a background thread that polls Telegram + sends proactive messages
-every 30 minutes.
+every 20 minutes.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def _self_ping():
 
 
 def _cron_loop():
-    """Background loop — runs the cron logic every 30 minutes."""
+    """Background loop — runs the cron logic every 20 minutes."""
     # Wait a bit for the server to fully start
     time.sleep(10)
 
@@ -50,8 +50,8 @@ def _cron_loop():
         except Exception:
             traceback.print_exc()
 
-        # Sleep 30 minutes
-        time.sleep(30 * 60)
+        # Sleep 20 minutes
+        time.sleep(20 * 60)
 
 
 def main():

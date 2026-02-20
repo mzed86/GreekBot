@@ -1,4 +1,4 @@
-"""Cron entry point — runs every 30 minutes on Render free tier.
+"""Cron entry point — runs every 20 minutes on Render free tier.
 
 Handles everything:
 1. Poll Telegram for any new incoming messages since last check
@@ -154,8 +154,8 @@ def _maybe_send_weekly_digest(conn, config: Config) -> None:
         tz = ZoneInfo(config.timezone)
         now = datetime.now(tz)
 
-        # Only on Sundays, 18:00-18:29 (one cron window)
-        if now.weekday() != 6 or now.hour != 18 or now.minute >= 30:
+        # Only on Sundays, 18:00-18:19 (one cron window)
+        if now.weekday() != 6 or now.hour != 18 or now.minute >= 20:
             return
 
         # Dedup key: weekly_digest:YYYY-WNN

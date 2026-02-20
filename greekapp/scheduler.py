@@ -1,6 +1,6 @@
 """Probabilistic send scheduler.
 
-Cron fires every 30 minutes. The scheduler decides whether *this* invocation
+Cron fires every 20 minutes. The scheduler decides whether *this* invocation
 should actually send a message, creating natural timing variation.
 """
 
@@ -51,7 +51,7 @@ def _time_weight(hour: int, config: Config) -> float:
 def should_send_now(conn, config: Config) -> bool:
     """Decide probabilistically whether to send a message right now.
 
-    Called every 30 minutes by the cron job. Returns True if we should send.
+    Called every 20 minutes by the cron job. Returns True if we should send.
     """
     tz = ZoneInfo(config.timezone)
     now = datetime.now(tz)
@@ -67,10 +67,10 @@ def should_send_now(conn, config: Config) -> bool:
         return False
 
     # Calculate base probability
-    # Active window = (end - start) hours = N slots of 30 min each
-    active_slots = (config.active_hours_end - config.active_hours_start) * 2
+    # Active window = (end - start) hours = N slots of 20 min each
+    active_slots = (config.active_hours_end - config.active_hours_start) * 3
     remaining_target = config.daily_target - sent_today
-    remaining_slots = (config.active_hours_end - hour) * 2
+    remaining_slots = (config.active_hours_end - hour) * 3
 
     if remaining_slots <= 0:
         return False
