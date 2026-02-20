@@ -180,7 +180,7 @@ def _cmd_start(config: Config):
 
 @app.route("/cron/send", methods=["POST"])
 def cron_send():
-    """Endpoint hit by the Render cron job every 30 minutes."""
+    """Endpoint hit by the Render cron job every 20 minutes."""
     config = _get_config()
 
     # Auth check — cron sends a secret header

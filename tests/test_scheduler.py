@@ -102,7 +102,7 @@ def test_should_send_target_reached(monkeypatch):
 def test_should_send_urgency_boost(monkeypatch):
     """When running low on slots, probability should be at least 0.5."""
     from zoneinfo import ZoneInfo
-    # 20:00 with 0 sends = 1 remaining slot for 2 messages → urgent
+    # 20:00 with 0 sends = 3 remaining slots for 2 messages → urgent
     now = datetime(2024, 6, 15, 20, 0, tzinfo=ZoneInfo("Europe/London"))
     monkeypatch.setattr(
         "greekapp.scheduler.datetime",
