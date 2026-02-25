@@ -87,6 +87,10 @@ def _handle_command(text: str, config: Config):
             return _cmd_due(conn, config)
         elif cmd == "/report":
             return _cmd_report(conn, config)
+        elif cmd == "/know":
+            return _cmd_know(conn, config, text)
+        elif cmd == "/skip":
+            return _cmd_skip(conn, config, text)
         elif cmd == "/start":
             return _cmd_start(config)
         else:
@@ -94,7 +98,7 @@ def _handle_command(text: str, config: Config):
             send_message(
                 config.telegram_bot_token,
                 config.telegram_chat_id,
-                "Commands: /report, /stats, /due, /start",
+                "Commands: /report, /stats, /due, /know, /skip",
                 parse_mode="",
             )
             return jsonify({"ok": True})
@@ -175,6 +179,82 @@ def _cmd_start(config: Config):
         "Γεια σου! I'm your Greek practice companion. I'll text you throughout the day mixing Greek into casual conversation. Just reply naturally!",
         parse_mode="",
     )
+    return jsonify({"ok": True})
+
+
+def _find_word(conn, greek_word: str) -> dict | None:
+    """Look up a word by exact match, then fuzzy match with/without article."""
+    row = fetchone_dict(conn, "SELECT id, greek, english, tags FROM words WHERE greek = ?", (greek_word,))
+    if row:
+        return row
+    # Try with common articles
+    for article in ["ο ", "η ", "το ", "οι ", "τα "]:
+        row = fetchone_dict(conn, "SELECT id, greek, english, tags FROM words WHERE greek = ?", (f"{article}{greek_word}",))
+        if row:
+            return row
+    # Try stripping article from input
+    import re
+    bare = re.sub(r"^(ο|η|το|οι|τα|τον|την|του|της|των)\s+", "", greek_word)
+    if bare != greek_word:
+        row = fetchone_dict(conn, "SELECT id, greek, english, tags FROM words WHERE greek = ?", (bare,))
+        if row:
+            return row
+    return None
+
+
+def _cmd_know(conn, config: Config, text: str):
+    """Mark a word as known — records quality=5 to push it far into SRS future."""
+    from greekapp.telegram import send_message
+    from greekapp.assessor import _get_word_card_state
+    from greekapp.srs import record_review
+
+    parts = text.strip().split(maxsplit=1)
+    if len(parts) < 2:
+        send_message(config.telegram_bot_token, config.telegram_chat_id,
+                     "Usage: /know <greek word>", parse_mode="")
+        return jsonify({"ok": True})
+
+    word = _find_word(conn, parts[1].strip())
+    if not word:
+        send_message(config.telegram_bot_token, config.telegram_chat_id,
+                     f"'{parts[1].strip()}' not found in vocabulary.", parse_mode="")
+        return jsonify({"ok": True})
+
+    card = _get_word_card_state(conn, word["id"])
+    record_review(conn, card, 5)
+    send_message(config.telegram_bot_token, config.telegram_chat_id,
+                 f"Marked '{word['greek']}' ({word['english']}) as known ✓", parse_mode="")
+    return jsonify({"ok": True})
+
+
+def _cmd_skip(conn, config: Config, text: str):
+    """Remove a word from the review cycle entirely."""
+    from greekapp.telegram import send_message
+    from greekapp.db import execute
+
+    parts = text.strip().split(maxsplit=1)
+    if len(parts) < 2:
+        send_message(config.telegram_bot_token, config.telegram_chat_id,
+                     "Usage: /skip <greek word>", parse_mode="")
+        return jsonify({"ok": True})
+
+    word = _find_word(conn, parts[1].strip())
+    if not word:
+        send_message(config.telegram_bot_token, config.telegram_chat_id,
+                     f"'{parts[1].strip()}' not found in vocabulary.", parse_mode="")
+        return jsonify({"ok": True})
+
+    current_tags = word.get("tags", "") or ""
+    if "skip:manual" in current_tags:
+        send_message(config.telegram_bot_token, config.telegram_chat_id,
+                     f"'{word['greek']}' is already skipped.", parse_mode="")
+        return jsonify({"ok": True})
+
+    new_tags = f"{current_tags},skip:manual" if current_tags else "skip:manual"
+    execute(conn, "UPDATE words SET tags = ? WHERE id = ?", (new_tags, word["id"]))
+    conn.commit()
+    send_message(config.telegram_bot_token, config.telegram_chat_id,
+                 f"Skipped '{word['greek']}' ({word['english']}) — won't appear again.", parse_mode="")
     return jsonify({"ok": True})
 
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from greekapp.db import execute, fetchall_dicts, _is_postgres
+from greekapp.db import execute, fetchall_dicts, ph, _is_postgres
 
 
 DEFAULT_EASE = 2.5
@@ -115,15 +115,16 @@ def load_due_cards(conn, limit: int = 20) -> list[CardState]:
                        ROW_NUMBER() OVER (PARTITION BY word_id ORDER BY reviewed_at DESC) AS rn
                 FROM reviews
             ) r ON r.word_id = w.id AND r.rn = 1
-            WHERE r.reviewed_at IS NULL
+            WHERE (r.reviewed_at IS NULL
                OR (r.reviewed_at + CAST(COALESCE(r.interval, 0) || ' days' AS INTERVAL))
-                  <= NOW()
+                  <= NOW())
+              AND (w.tags IS NULL OR w.tags NOT LIKE ?)
             ORDER BY
                 CASE WHEN r.reviewed_at IS NULL THEN 1 ELSE 0 END,
                 r.reviewed_at ASC,
                 RANDOM()
             LIMIT ?
-        """, (DEFAULT_EASE, limit))
+        """, (DEFAULT_EASE, '%skip:manual%', limit))
     else:
         rows = fetchall_dicts(conn, """
             SELECT
@@ -138,15 +139,16 @@ def load_due_cards(conn, limit: int = 20) -> list[CardState]:
                        ROW_NUMBER() OVER (PARTITION BY word_id ORDER BY reviewed_at DESC) AS rn
                 FROM reviews
             ) r ON r.word_id = w.id AND r.rn = 1
-            WHERE r.reviewed_at IS NULL
+            WHERE (r.reviewed_at IS NULL
                OR datetime(r.reviewed_at, '+' || CAST(COALESCE(r.interval, 0) AS TEXT) || ' days')
-                  <= datetime('now')
+                  <= datetime('now'))
+              AND (w.tags IS NULL OR w.tags NOT LIKE ?)
             ORDER BY
                 CASE WHEN r.reviewed_at IS NULL THEN 1 ELSE 0 END,
                 r.reviewed_at ASC,
                 RANDOM()
             LIMIT ?
-        """, (DEFAULT_EASE, limit))
+        """, (DEFAULT_EASE, '%skip:manual%', limit))
 
     cards = []
     for row in rows:

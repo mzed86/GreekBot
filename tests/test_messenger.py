@@ -7,9 +7,11 @@ import greekapp.db as db_module
 from greekapp.db import execute, get_connection, init_db
 from greekapp.messenger import (
     _build_search_topics,
+    _bold_target_words,
     _fetch_rss_headlines,
     _fetch_rss_items_rich,
     _POLITICAL_FEEDS,
+    _verify_words_in_message,
     build_generation_prompt,
     select_words,
 )
@@ -299,3 +301,61 @@ def test_prompt_contains_political_persona():
     prompt = build_generation_prompt({}, words, [])
     assert "you take sides" in prompt.lower() or "take sides" in prompt
     assert "not neutral" in prompt.lower() or "you're not neutral" in prompt
+
+
+# --- _verify_words_in_message ---
+
+def test_verify_exact_match():
+    words = [CardState(word_id=1, greek="η βελτίωση", english="improvement")]
+    verified, dropped = _verify_words_in_message(words, "Υπάρχει μεγάλη βελτίωση στην οικονομία.")
+    assert len(verified) == 1
+    assert len(dropped) == 0
+
+
+def test_verify_inflected_form():
+    """Stem matching should catch inflected forms like βελτιώσεις from βελτίωση."""
+    words = [CardState(word_id=1, greek="η βελτίωση", english="improvement")]
+    verified, dropped = _verify_words_in_message(words, "Βλέπω πολλές βελτιώσεις τώρα τελευταία.")
+    assert len(verified) == 1
+
+
+def test_verify_missing_word():
+    words = [CardState(word_id=1, greek="η βελτίωση", english="improvement")]
+    verified, dropped = _verify_words_in_message(words, "Πώς είσαι σήμερα;")
+    assert len(verified) == 0
+    assert len(dropped) == 1
+
+
+def test_verify_multiple_mixed():
+    words = [
+        CardState(word_id=1, greek="η βελτίωση", english="improvement"),
+        CardState(word_id=2, greek="το κράτος", english="state"),
+    ]
+    verified, dropped = _verify_words_in_message(words, "Το κράτος πρέπει να κάνει κάτι.")
+    assert len(verified) == 1
+    assert verified[0].greek == "το κράτος"
+    assert len(dropped) == 1
+
+
+# --- _bold_target_words ---
+
+def test_bold_wraps_target_word():
+    words = [CardState(word_id=1, greek="η βελτίωση", english="improvement")]
+    result = _bold_target_words("Υπάρχει βελτίωση στην οικονομία.", words)
+    assert "<b>" in result
+    assert "βελτίωση" in result
+
+
+def test_bold_escapes_html():
+    words = [CardState(word_id=1, greek="η βελτίωση", english="improvement")]
+    result = _bold_target_words("A < B & βελτίωση > C", words)
+    assert "&lt;" in result
+    assert "&amp;" in result
+    assert "<b>" in result
+
+
+def test_prompt_requires_all_target_words():
+    """Generation prompt must instruct Claude to use ALL target words."""
+    words = [CardState(word_id=1, greek="γεια", english="hello")]
+    prompt = build_generation_prompt({}, words, [])
+    assert "MUST use ALL" in prompt

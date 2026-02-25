@@ -278,12 +278,16 @@ Analyze the user's reply and respond with ONLY valid JSON (no other text):
 }}
 
 QUALITY SCALE for word_assessments:
-  5 - Used the Greek word correctly in their reply
+  5 - Used the Greek word correctly and naturally in their reply
   4 - Responded showing clear understanding of the word's meaning
   3 - Seemed to understand but response is ambiguous
   2 - Asked what the word means or seemed confused
-  1 - Ignored the Greek word entirely
   0 - Clearly misunderstood the word
+
+IMPORTANT: If a word was in the bot's message but the user's reply gives NO signal about
+whether they understood it (e.g. they changed subject, or didn't engage with that part),
+DO NOT include that word in word_assessments at all. Only assess words where the reply
+provides real evidence of understanding or confusion. Empty array is fine.
 
 CORRECTIONS — analyze the user's Greek for:
   - Vocabulary mistakes (wrong word used, e.g. "καιρό" when they meant "ώρα")
@@ -291,8 +295,6 @@ CORRECTIONS — analyze the user's Greek for:
   - Spelling/accent errors (missing or wrong accent marks, wrong letters)
   Only include actual mistakes. Empty array if their Greek was correct.
   For each correction, "correct" should be the word in its correct form (dictionary/base form).
-
-Only assess words where you have signal from their reply. Skip words the conversation didn't touch on.
 For profile_learnings, note anything new you learned about the user (a project, a plan, a preference, etc). Empty array if nothing new.
 For the reply: write ENTIRELY in Greek — no English whatsoever. You're a Greek friend texting naturally.
 IMPORTANT — if the user made Greek mistakes (vocabulary, grammar, or spelling), you MUST briefly correct them at the START of your reply before continuing the conversation. Use a concise format like: "* σχολείο, όχι σχολό" or "* θέλω να πάω, όχι θέλω να πήγω". Then continue chatting naturally. Don't skip mistakes — pointing them out is how they learn.
@@ -385,15 +387,12 @@ def assess_and_reply(conn, config: Config, user_reply: str) -> dict:
     if data is None:
         return _simple_reply(conn, config, user_reply, conversation, profile, search_context)
 
-    # Apply SRS updates
+    # Apply SRS updates — only for words Claude actually assessed
     assessments = data.get("word_assessments", [])
     for assessment in assessments:
         try:
             quality = assessment["quality"]
-            # Skip "ignored" (quality=1) — the word wasn't relevant to this
-            # exchange, so recording a review would wrongly reset SRS progress.
-            # In conversation, "ignored" means "not discussed", not "failed recall".
-            if quality == 1:
+            if quality < 0 or quality > 5:
                 continue
             card = _get_word_card_state(conn, assessment["word_id"])
             record_review(conn, card, quality)

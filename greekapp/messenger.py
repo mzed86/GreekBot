@@ -221,6 +221,63 @@ def web_search(query: str, max_results: int = 5) -> str:
     return "\n".join(headlines) if headlines else ""
 
 
+_ACCENT_MAP = str.maketrans("άέήίόύώϊϋΐΰ", "αεηιουωιυιυ")
+
+
+def _strip_accents(text: str) -> str:
+    return text.translate(_ACCENT_MAP)
+
+
+def _verify_words_in_message(words: list[CardState], message_text: str) -> tuple[list[CardState], list[CardState]]:
+    """Check which target words actually appear in the generated message.
+
+    Uses accent-normalized stem matching (first 4+ chars) to handle Greek
+    inflections where accents shift (e.g. βελτίωση → βελτιώσεις).
+    Returns (verified, dropped) tuples.
+    """
+    text_norm = _strip_accents(message_text.lower())
+    verified, dropped = [], []
+
+    for w in words:
+        bare = re.sub(r"^(ο|η|το|οι|τα|τον|την|του|της|των)\s+", "", w.greek.lower())
+        target = _strip_accents(bare if bare else w.greek.lower())
+        if len(target) < 3:
+            verified.append(w)  # Too short to verify reliably
+            continue
+        # Use a stem (first 4 chars min, or full word if shorter) for inflection tolerance
+        stem_len = min(len(target), max(4, len(target) - 2))
+        stem = target[:stem_len]
+        pattern = r'(?<![α-ωϊϋ])' + re.escape(stem)
+        if re.search(pattern, text_norm):
+            verified.append(w)
+        else:
+            dropped.append(w)
+
+    return verified, dropped
+
+
+def _bold_target_words(message_text: str, words: list[CardState]) -> str:
+    """Wrap target vocabulary words in <b> tags for Telegram HTML.
+
+    HTML-escapes the full message first, then applies bold tags.
+    """
+    import html as html_mod
+    escaped = html_mod.escape(message_text)
+
+    for w in words:
+        bare = re.sub(r"^(ο|η|το|οι|τα|τον|την|του|της|των)\s+", "", w.greek.lower())
+        target = bare if bare else w.greek.lower()
+        if len(target) < 3:
+            continue
+        stem_len = min(len(target), max(4, len(target) - 2))
+        stem = target[:stem_len]
+        # Match the stem at a Greek word boundary, capture the full word
+        pattern = r'(?<![α-ωά-ώϊϋΐΰ])(' + re.escape(stem) + r'[α-ωά-ώϊϋΐΰ]*)(?![α-ωά-ώϊϋΐΰ])'
+        escaped = re.sub(pattern, r'<b>\1</b>', escaped, count=1, flags=re.IGNORECASE)
+
+    return escaped
+
+
 def build_generation_prompt(
     profile: dict,
     words: list[CardState],
@@ -256,14 +313,14 @@ TIME: {time_context}
 RULES:
 - Write 1-3 short sentences in Greek, like a real text message
 - Write ONLY in Greek. Do NOT include English translations, parenthetical or otherwise.
-- If they don't understand a word, they will ask — that's part of learning
-- Weave the target words naturally into what you're saying
-- Use natural Greek grammar and sentence structure
+- You MUST use ALL of the target words above. Every single one. This is critical.
+- If a word doesn't fit the current topic, shift the topic slightly to include it
+- Use natural Greek grammar and sentence structure — inflect words as needed
 - NEVER list vocabulary or make it feel like a flashcard or lesson
 - Reference their actual interests and life when possible — use the NEWS CONTEXT below if available
 - Match the time of day naturally
 - Warm, casual tone — you're friends
-- Keep it to plain text (no markdown, no HTML tags)
+- Keep it to plain text (no markdown, no HTML tags, no bold)
 - If there's political news in the NEWS CONTEXT, share a sharp take — say what you actually think, pick a side, react like a real person
 
 {f"RECENT CONVERSATION (for continuity):{chr(10)}{history_text}" if history_text else "This is the start of your conversation. Send a friendly opener."}
@@ -297,16 +354,23 @@ def compose_and_send(conn, config: Config) -> dict:
     )
     message_text = response.content[0].text.strip()
 
-    # Send via Telegram
+    # Verify which target words Claude actually used
+    verified, dropped = _verify_words_in_message(words, message_text)
+    if dropped:
+        logger.info("Words not used in message: %s",
+                     ", ".join(w.greek for w in dropped))
+
+    # Bold target words and send as HTML
+    html_text = _bold_target_words(message_text, verified)
     tg_response = send_message(
         config.telegram_bot_token,
         config.telegram_chat_id,
-        message_text,
-        parse_mode="",  # plain text
+        html_text,
+        parse_mode="HTML",
     )
 
-    # Record in DB
-    word_ids = json.dumps([w.word_id for w in words])
+    # Only record verified word IDs — don't track words the user never saw
+    word_ids = json.dumps([w.word_id for w in verified])
     telegram_msg_id = tg_response.get("result", {}).get("message_id")
 
     execute(
@@ -334,6 +398,7 @@ def compose_and_send(conn, config: Config) -> dict:
 
     return {
         "message": message_text,
-        "words": [{"greek": w.greek, "english": w.english} for w in words],
+        "words": [{"greek": w.greek, "english": w.english} for w in verified],
+        "words_dropped": [{"greek": w.greek, "english": w.english} for w in dropped],
         "telegram_msg_id": telegram_msg_id,
     }

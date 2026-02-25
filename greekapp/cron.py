@@ -208,19 +208,93 @@ def _handle_command(text: str, conn, config: Config) -> None:
         msg = f"Due now: {len(due)} words ({new} new, {review} review)"
         send_message(config.telegram_bot_token, config.telegram_chat_id, msg, parse_mode="")
 
+    elif cmd == "/know":
+        _cmd_know_cron(text, conn, config, send_message)
+
+    elif cmd == "/skip":
+        _cmd_skip_cron(text, conn, config, send_message)
+
     elif cmd == "/start":
         send_message(
             config.telegram_bot_token, config.telegram_chat_id,
-            "Γεια σου! I'm your Greek practice companion. Commands: /report, /stats, /due",
+            "Γεια σου! I'm your Greek practice companion. Commands: /report, /stats, /due, /know, /skip",
             parse_mode="",
         )
 
     else:
         send_message(
             config.telegram_bot_token, config.telegram_chat_id,
-            "Commands: /report, /stats, /due",
+            "Commands: /report, /stats, /due, /know, /skip",
             parse_mode="",
         )
+
+
+def _find_word_cron(conn, greek_word: str):
+    """Look up a word by exact match, then fuzzy match with/without article."""
+    import re
+    row = fetchone_dict(conn, "SELECT id, greek, english, tags FROM words WHERE greek = ?", (greek_word,))
+    if row:
+        return row
+    for article in ["ο ", "η ", "το ", "οι ", "τα "]:
+        row = fetchone_dict(conn, "SELECT id, greek, english, tags FROM words WHERE greek = ?", (f"{article}{greek_word}",))
+        if row:
+            return row
+    bare = re.sub(r"^(ο|η|το|οι|τα|τον|την|του|της|των)\s+", "", greek_word)
+    if bare != greek_word:
+        row = fetchone_dict(conn, "SELECT id, greek, english, tags FROM words WHERE greek = ?", (bare,))
+        if row:
+            return row
+    return None
+
+
+def _cmd_know_cron(text, conn, config, send_message):
+    """Mark a word as known via cron polling."""
+    from greekapp.assessor import _get_word_card_state
+    from greekapp.srs import record_review
+
+    parts = text.strip().split(maxsplit=1)
+    if len(parts) < 2:
+        send_message(config.telegram_bot_token, config.telegram_chat_id,
+                     "Usage: /know <greek word>", parse_mode="")
+        return
+
+    word = _find_word_cron(conn, parts[1].strip())
+    if not word:
+        send_message(config.telegram_bot_token, config.telegram_chat_id,
+                     f"'{parts[1].strip()}' not found in vocabulary.", parse_mode="")
+        return
+
+    card = _get_word_card_state(conn, word["id"])
+    record_review(conn, card, 5)
+    send_message(config.telegram_bot_token, config.telegram_chat_id,
+                 f"Marked '{word['greek']}' ({word['english']}) as known ✓", parse_mode="")
+
+
+def _cmd_skip_cron(text, conn, config, send_message):
+    """Remove a word from the review cycle via cron polling."""
+    parts = text.strip().split(maxsplit=1)
+    if len(parts) < 2:
+        send_message(config.telegram_bot_token, config.telegram_chat_id,
+                     "Usage: /skip <greek word>", parse_mode="")
+        return
+
+    word = _find_word_cron(conn, parts[1].strip())
+    if not word:
+        send_message(config.telegram_bot_token, config.telegram_chat_id,
+                     f"'{parts[1].strip()}' not found in vocabulary.", parse_mode="")
+        return
+
+    current_tags = word.get("tags", "") or ""
+    if "skip:manual" in current_tags:
+        send_message(config.telegram_bot_token, config.telegram_chat_id,
+                     f"'{word['greek']}' is already skipped.", parse_mode="")
+        return
+
+    new_tags = f"{current_tags},skip:manual" if current_tags else "skip:manual"
+    execute(conn, "UPDATE words SET tags = ? WHERE id = ?", (new_tags, word["id"]))
+    conn.commit()
+    send_message(config.telegram_bot_token, config.telegram_chat_id,
+                 f"Skipped '{word['greek']}' ({word['english']}) — won't appear again.", parse_mode="")
 
 
 if __name__ == "__main__":
