@@ -302,7 +302,10 @@ If they ask what a word means, explain it in simple Greek. If they ask you to te
 def _process_correction(conn, correction: dict) -> None:
     """Process a correction — ensure the correct word is in the vocab and schedule it for review.
 
-    If the word already exists, record a low-quality review so it comes back sooner.
+    For existing words, the penalty depends on the error type and the word's SRS history:
+      - Spelling/accent errors on well-known words (interval >= 6d) get quality=3
+        (they know the word, just mistyped it — don't nuke their progress).
+      - Vocab/grammar errors or words with weak history get quality=1 (genuine mistake).
     If it's a new word, add it to the vocabulary and it'll naturally appear as a due card.
     """
     correct = correction.get("correct", "").strip()
@@ -314,10 +317,15 @@ def _process_correction(conn, correction: dict) -> None:
     existing = fetchone_dict(conn, "SELECT id FROM words WHERE greek = ?", (correct,))
 
     if existing:
-        # Word exists — record a quality=1 review to bring it back for practice
         try:
             card = _get_word_card_state(conn, existing["id"])
-            record_review(conn, card, 1)  # Wrong but recognized
+            error_type = correction.get("type", "vocab")
+            # Spelling/accent slip on a word they clearly know — gentle penalty
+            if error_type == "spelling" and card.interval >= 6.0 and card.repetition >= 2:
+                quality = 3  # Correct with difficulty
+            else:
+                quality = 1  # Wrong but recognized
+            record_review(conn, card, quality)
         except ValueError:
             pass
     else:
@@ -490,10 +498,11 @@ def _find_vocab_words_in_text(conn, text: str) -> list[int]:
 
 
 def _extract_taught_words_from_reply(conn, reply_text: str) -> list[int]:
-    """Extract Greek words being taught in a reply and ensure they're in the vocab.
+    """Extract Greek words being taught in a reply that already exist in the vocab.
 
     Looks for patterns like quoted words, words being explained, etc.
-    If a word isn't in the vocab, adds it.
+    Only returns words already in the vocabulary — does NOT auto-create entries,
+    since that was producing garbage like "ναι" and "που" with no translations.
     """
     # Find words in quotes (e.g., "αναβάθμιση") or after "λέξη" (word)
     quoted = re.findall(r'[""«]([α-ωά-ώΑ-ΩΆ-Ώ]+)[""»]', reply_text)
@@ -507,8 +516,7 @@ def _extract_taught_words_from_reply(conn, reply_text: str) -> list[int]:
         # Check if already in vocab (with or without article)
         existing = fetchone_dict(conn, "SELECT id FROM words WHERE lower(greek) = ?", (word,))
         if not existing:
-            # Try with common articles
-            for article in ["", "ο ", "η ", "το "]:
+            for article in ["ο ", "η ", "το "]:
                 existing = fetchone_dict(
                     conn, "SELECT id FROM words WHERE lower(greek) = ?",
                     (f"{article}{word}",),
@@ -518,19 +526,6 @@ def _extract_taught_words_from_reply(conn, reply_text: str) -> list[int]:
 
         if existing:
             word_ids.append(existing["id"])
-        else:
-            # New word — add it to vocab so it gets tracked
-            # We don't know the English yet, but we can extract it from context
-            english = _guess_english_from_context(reply_text, word)
-            execute(
-                conn,
-                "INSERT INTO words (greek, english, tags) VALUES (?, ?, ?)",
-                (word, english, "conversation"),
-            )
-            conn.commit()
-            new_row = fetchone_dict(conn, "SELECT id FROM words WHERE greek = ?", (word,))
-            if new_row:
-                word_ids.append(new_row["id"])
 
     return word_ids
 

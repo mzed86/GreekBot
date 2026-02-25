@@ -94,7 +94,13 @@ def record_review(conn, state: CardState, quality: int) -> CardState:
 
 
 def load_due_cards(conn, limit: int = 20) -> list[CardState]:
-    """Return cards that are due for review, oldest first."""
+    """Return cards that are due for review.
+
+    Review cards (seen before) are ordered oldest-review-first so the most
+    overdue words come back first.  New cards (never reviewed) are randomised
+    so the bot cycles through the whole vocabulary instead of always picking
+    the same batch from the top of the table.
+    """
     if _is_postgres():
         rows = fetchall_dicts(conn, """
             SELECT
@@ -112,7 +118,10 @@ def load_due_cards(conn, limit: int = 20) -> list[CardState]:
             WHERE r.reviewed_at IS NULL
                OR (r.reviewed_at + CAST(COALESCE(r.interval, 0) || ' days' AS INTERVAL))
                   <= NOW()
-            ORDER BY COALESCE(r.reviewed_at, '2000-01-01'::timestamp) ASC
+            ORDER BY
+                CASE WHEN r.reviewed_at IS NULL THEN 1 ELSE 0 END,
+                r.reviewed_at ASC,
+                RANDOM()
             LIMIT ?
         """, (DEFAULT_EASE, limit))
     else:
@@ -132,7 +141,10 @@ def load_due_cards(conn, limit: int = 20) -> list[CardState]:
             WHERE r.reviewed_at IS NULL
                OR datetime(r.reviewed_at, '+' || CAST(COALESCE(r.interval, 0) AS TEXT) || ' days')
                   <= datetime('now')
-            ORDER BY COALESCE(r.reviewed_at, '2000-01-01') ASC
+            ORDER BY
+                CASE WHEN r.reviewed_at IS NULL THEN 1 ELSE 0 END,
+                r.reviewed_at ASC,
+                RANDOM()
             LIMIT ?
         """, (DEFAULT_EASE, limit))
 
