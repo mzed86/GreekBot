@@ -47,6 +47,8 @@ def import_csv(conn, path: Path) -> dict[str, int]:
             raise ValueError(f"CSV is missing required columns: {missing}")
 
         added = skipped = 0
+        use_pg = _is_postgres()
+
         for raw_row in reader:
             row = _normalise_row(raw_row)
             greek = row.get("greek", "")
@@ -56,6 +58,10 @@ def import_csv(conn, path: Path) -> dict[str, int]:
                 continue
 
             try:
+                if use_pg:
+                    # Use SAVEPOINT so a duplicate only rolls back the single row,
+                    # not the entire transaction.
+                    execute(conn, "SAVEPOINT import_row")
                 execute(
                     conn,
                     """INSERT INTO words (greek, english, part_of_speech, example_el, example_en, tags)
@@ -69,13 +75,14 @@ def import_csv(conn, path: Path) -> dict[str, int]:
                         row.get("tags", ""),
                     ),
                 )
+                if use_pg:
+                    execute(conn, "RELEASE SAVEPOINT import_row")
                 added += 1
             except (sqlite3.IntegrityError, Exception) as e:
-                # Handle both SQLite and PostgreSQL unique constraint violations
                 err_str = str(e).lower()
                 if "unique" in err_str or "duplicate" in err_str or "integrity" in err_str:
-                    if _is_postgres():
-                        conn.rollback()
+                    if use_pg:
+                        execute(conn, "ROLLBACK TO SAVEPOINT import_row")
                     skipped += 1
                 else:
                     raise

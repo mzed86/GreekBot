@@ -59,3 +59,32 @@ def test_import_skips_empty_rows():
     assert result["added"] == 1
     assert result["skipped"] == 1
     conn.close()
+
+
+def test_import_duplicates_dont_destroy_earlier_inserts():
+    """Duplicates mid-CSV must not wipe out words inserted before them.
+
+    This was the core bug: on PostgreSQL, conn.rollback() after a unique
+    constraint violation erased ALL previously inserted words in the
+    transaction, not just the failed row.
+    """
+    path = _tmp_csv(
+        "greek,english\n"
+        "ένα,one\n"
+        "δύο,two\n"
+        "τρία,three\n"
+        "ένα,one\n"    # duplicate of row 1
+        "τέσσερα,four\n"
+    )
+    conn = get_connection()
+    result = import_csv(conn, path)
+    assert result["added"] == 4
+    assert result["skipped"] == 1
+
+    # Crucially, ALL four unique words must be present — not just the ones
+    # after the duplicate.
+    from greekapp.db import fetchall_dicts
+    rows = fetchall_dicts(conn, "SELECT greek FROM words")
+    words = sorted(r["greek"] for r in rows)
+    assert words == sorted(["δύο", "ένα", "τέσσερα", "τρία"])
+    conn.close()
