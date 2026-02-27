@@ -1,4 +1,4 @@
-"""Learning progress report generation."""
+"""Learning progress report generation with self-monitoring metrics."""
 
 from __future__ import annotations
 
@@ -6,7 +6,11 @@ from greekapp.db import fetchall_dicts, fetchone_dict
 
 
 def generate_report(conn) -> str:
-    """Generate a full learning progress report as plain text."""
+    """Generate a full learning progress report as plain text.
+
+    Includes self-monitoring metrics: retention rate, engagement trend,
+    leech words, and error pattern analysis.
+    """
     sections = []
 
     # --- Overview ---
@@ -36,6 +40,37 @@ def generate_report(conn) -> str:
         f"Reviews: {total_reviews}\n"
         f"Messages: {messages_out} sent, {messages_in} received"
     )
+
+    # --- Retention & Self-Monitoring ---
+    from greekapp.srs import get_retention_stats
+    stats = get_retention_stats(conn)
+
+    trend_icon = {"improving": "^", "declining": "v", "stable": "="}[stats["quality_trend"]]
+    retention_section = (
+        f"--- Retention ---\n"
+        f"Overall: {stats['retention_rate']:.0f}% | Last 7d: {stats['recent_retention']:.0f}%\n"
+        f"Avg quality (recent): {stats['avg_quality_recent']:.1f}/5 {trend_icon}\n"
+        f"Trend: {stats['quality_trend']}"
+    )
+
+    # Add adaptive recommendation
+    if stats["quality_trend"] == "declining" and stats["recent_reviews"] > 5:
+        retention_section += "\nSlowing new cards — focus on review"
+    elif stats["recent_retention"] > 85 and stats["recent_reviews"] > 10:
+        retention_section += "\nStrong retention — ready for more new words"
+
+    sections.append(retention_section)
+
+    # --- Leech words (repeatedly failed) ---
+    from greekapp.srs import get_leeches
+    leeches = get_leeches(conn, limit=8)
+    if leeches:
+        lines = ["--- Leech words (4+ consecutive failures) ---"]
+        for w in leeches:
+            from greekapp.srs import get_consecutive_failures
+            fails = get_consecutive_failures(conn, w.word_id)
+            lines.append(f"  {w.greek} ({w.english}) — {fails} failures in a row")
+        sections.append("\n".join(lines))
 
     # --- Struggling words (lowest ease, most resets) ---
     struggling = fetchall_dicts(conn, """
@@ -76,6 +111,22 @@ def generate_report(conn) -> str:
             lines.append(f"  {w['greek']} ({w['english']}) — {w['interval']:.0f} days")
         sections.append("\n".join(lines))
 
+    # --- Error pattern analysis ---
+    error_patterns = fetchall_dicts(conn, """
+        SELECT tags, COUNT(*) AS cnt FROM words
+        WHERE tags LIKE 'correction:%'
+        GROUP BY tags
+        ORDER BY cnt DESC
+        LIMIT 5
+    """)
+
+    if error_patterns:
+        lines = ["--- Error patterns ---"]
+        for ep in error_patterns:
+            error_type = ep["tags"].replace("correction:", "")
+            lines.append(f"  {error_type}: {ep['cnt']} corrections")
+        sections.append("\n".join(lines))
+
     # --- Recent corrections ---
     corrections = fetchall_dicts(conn, """
         SELECT greek, english, tags FROM words
@@ -96,11 +147,16 @@ def generate_report(conn) -> str:
     due = load_due_cards(conn, limit=100)
     new_due = sum(1 for c in due if c.last_review is None)
     review_due = len(due) - new_due
-    sections.append(f"--- Due now ---\n{len(due)} words ({new_due} new, {review_due} review)")
+    learning = sum(1 for c in due if c.last_review is not None and c.is_learning)
+    sections.append(
+        f"--- Due now ---\n"
+        f"{len(due)} words ({new_due} new, {learning} learning, {review_due - learning} review)"
+    )
 
     # --- Profile notes learned ---
     notes = fetchall_dicts(conn, """
         SELECT category, content FROM profile_notes
+        WHERE category NOT LIKE 'system:%' AND category NOT LIKE 'weekly_%'
         ORDER BY created_at DESC
         LIMIT 8
     """)

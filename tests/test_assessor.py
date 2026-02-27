@@ -1,4 +1,4 @@
-"""Tests for the assessment module — JSON parsing, word matching, context guessing."""
+"""Tests for the assessment module — JSON parsing, word matching, context guessing, error patterns."""
 
 import json
 import tempfile
@@ -7,12 +7,14 @@ from pathlib import Path
 import greekapp.db as db_module
 from greekapp.db import execute, fetchone_dict, get_connection, init_db
 from greekapp.assessor import (
+    _detect_and_save_error_patterns,
     _find_vocab_words_in_text,
+    _get_error_patterns,
     _get_recent_outgoing_words,
     _guess_english_from_context,
     _parse_json_lenient,
 )
-from greekapp.srs import DEFAULT_EASE, record_review, CardState
+from greekapp.srs import DEFAULT_EASE, LEARNING_STEP, record_review, CardState
 
 _ORIG_DB_PATH = db_module.DB_PATH
 
@@ -237,10 +239,11 @@ def test_quality_1_should_not_reset_srs_progress():
 
     # Simulate the word having been reviewed successfully (quality=4)
     card = CardState(word_id=wid, greek="πρόοδος", english="progress")
-    card = record_review(conn, card, 4)  # interval=1, repetition=1
-    card = record_review(conn, card, 4)  # interval=6, repetition=2
+    card = record_review(conn, card, 4)  # interval=LEARNING_STEP, repetition=1
+    card = record_review(conn, card, 4)  # interval=1.0, repetition=2
+    card = record_review(conn, card, 4)  # interval=6.0, repetition=3
     assert card.interval == 6.0
-    assert card.repetition == 2
+    assert card.repetition == 3
 
     # Now verify that if we record quality=1 it DOES reset (baseline)
     # This confirms the SM-2 algorithm treats quality<3 as failure
@@ -250,11 +253,60 @@ def test_quality_1_should_not_reset_srs_progress():
     assert hypothetical.repetition == 0
 
     # The fix: assess_and_reply skips quality=1 entirely, so the card
-    # state should remain at interval=6, repetition=2 after a conversation
-    # where this word wasn't discussed. We verify the card state is unchanged.
+    # state should remain at interval=6, repetition=3 after a conversation
+    # where this word wasn't discussed.
     review_count = fetchone_dict(
         conn, "SELECT COUNT(*) AS cnt FROM reviews WHERE word_id = ?", (wid,)
     )["cnt"]
-    assert review_count == 2  # Only the two quality=4 reviews
+    assert review_count == 3  # Only the three quality=4 reviews
+
+    conn.close()
+
+
+# --- Error pattern analysis ---
+
+def test_error_patterns_empty():
+    conn = get_connection()
+    patterns = _get_error_patterns(conn)
+    assert patterns == ""
+    conn.close()
+
+
+def test_error_patterns_detects_recurring():
+    conn = get_connection()
+    # Add 4 spelling corrections
+    for i in range(4):
+        execute(conn, "INSERT INTO words (greek, english, tags) VALUES (?, ?, ?)",
+                (f"word{i}", f"eng{i}", "correction:spelling"))
+    conn.commit()
+
+    patterns = _get_error_patterns(conn)
+    assert "spelling" in patterns
+    assert "4" in patterns
+    conn.close()
+
+
+def test_detect_and_save_error_patterns():
+    conn = get_connection()
+    # Add 5 grammar corrections
+    for i in range(5):
+        execute(conn, "INSERT INTO words (greek, english, tags) VALUES (?, ?, ?)",
+                (f"gram{i}", f"eng{i}", "correction:grammar"))
+    conn.commit()
+
+    _detect_and_save_error_patterns(conn)
+
+    # Check a profile note was saved
+    note = fetchone_dict(conn,
+        "SELECT * FROM profile_notes WHERE category LIKE 'weakness:%'")
+    assert note is not None
+    assert "grammar" in note["content"]
+
+    # Running again should not create a duplicate
+    _detect_and_save_error_patterns(conn)
+    from greekapp.db import fetchall_dicts
+    notes = fetchall_dicts(conn,
+        "SELECT * FROM profile_notes WHERE category LIKE 'weakness:%'")
+    assert len(notes) == 1
 
     conn.close()

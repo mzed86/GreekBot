@@ -197,6 +197,41 @@ def _get_recent_conversation(conn, limit: int = 8) -> list[dict]:
     )
 
 
+def _get_error_patterns(conn) -> str:
+    """Analyze recent corrections for recurring error patterns.
+
+    Returns a prompt section describing the user's recurring weaknesses
+    so Claude can address them proactively.
+    """
+    recent = fetchall_dicts(conn, """
+        SELECT tags, greek, english FROM words
+        WHERE tags LIKE 'correction:%'
+        ORDER BY created_at DESC
+        LIMIT 30
+    """)
+
+    if not recent:
+        return ""
+
+    type_counts: dict[str, list[str]] = {}
+    for row in recent:
+        error_type = (row.get("tags") or "").replace("correction:", "")
+        if error_type not in type_counts:
+            type_counts[error_type] = []
+        type_counts[error_type].append(f"{row['greek']} ({row['english']})")
+
+    patterns = []
+    for error_type, words in type_counts.items():
+        if len(words) >= 3:
+            examples = ", ".join(words[:5])
+            patterns.append(f"- Recurring {error_type} errors ({len(words)} instances): {examples}")
+
+    if not patterns:
+        return ""
+
+    return "\nKNOWN WEAKNESSES (address these proactively when relevant):\n" + "\n".join(patterns)
+
+
 def _build_assessment_prompt(
     user_reply: str,
     words: list[dict],
@@ -204,6 +239,8 @@ def _build_assessment_prompt(
     profile: dict,
     search_context: str = "",
     due_words: list | None = None,
+    error_patterns: str = "",
+    leech_words: list | None = None,
 ) -> str:
     """Build prompt for Claude to assess understanding + extract learnings."""
     profile_text = profile_to_prompt_text(profile)
@@ -220,6 +257,11 @@ def _build_assessment_prompt(
     if due_words:
         due_list = ", ".join(f"{w.greek} ({w.english})" for w in due_words[:8])
         due_section = f"\nWORDS FROM THEIR STUDY LIST (use one of these in your reply if naturally possible): {due_list}\n"
+
+    leech_section = ""
+    if leech_words:
+        leech_list = ", ".join(f"{w.greek} ({w.english})" for w in leech_words[:5])
+        leech_section = f"\nLEECH WORDS (they keep failing these — if one comes up, provide a mnemonic, etymology, or memorable example): {leech_list}\n"
 
     conv_lines = []
     for msg in reversed(conversation):
@@ -247,7 +289,7 @@ GREEK WORDS RECENTLY SENT:
 
 USER PROFILE:
 {profile_text}
-{search_section}{due_section}
+{search_section}{due_section}{leech_section}{error_patterns}
 Analyze the user's reply and respond with ONLY valid JSON (no other text):
 
 {{
@@ -265,7 +307,8 @@ Analyze the user's reply and respond with ONLY valid JSON (no other text):
       "correct": "<correct Greek form>",
       "english": "<English meaning>",
       "type": "<vocab|grammar|spelling>",
-      "explanation": "<brief explanation of the mistake in simple Greek>"
+      "explanation": "<brief explanation of the mistake in simple Greek>",
+      "grammar_rule": "<optional: the underlying grammar rule, e.g. 'neuter nouns in -ο take -ου in genitive'>"
     }}
   ],
   "profile_learnings": [
@@ -284,10 +327,14 @@ QUALITY SCALE for word_assessments:
   2 - Asked what the word means or seemed confused
   0 - Clearly misunderstood the word
 
-IMPORTANT: If a word was in the bot's message but the user's reply gives NO signal about
-whether they understood it (e.g. they changed subject, or didn't engage with that part),
-DO NOT include that word in word_assessments at all. Only assess words where the reply
-provides real evidence of understanding or confusion. Empty array is fine.
+CRITICAL ASSESSMENT RULES:
+  - ONLY assess words where the user's reply provides REAL EVIDENCE of understanding or confusion.
+  - If a word was in the bot's message but the user's reply gives NO signal about it
+    (e.g. they changed subject, replied briefly, didn't engage with that part),
+    DO NOT include that word in word_assessments. Omit it completely.
+  - DO NOT penalize words the user had no chance to demonstrate. An empty array is completely fine.
+  - A short reply like "ναι" or "εντάξει" is NOT evidence of misunderstanding — it's no evidence at all. Skip those words.
+  - Only give quality 0-2 if the user ACTIVELY showed confusion or misuse of the word.
 
 CORRECTIONS — analyze the user's Greek for:
   - Vocabulary mistakes (wrong word used, e.g. "καιρό" when they meant "ώρα")
@@ -295,9 +342,13 @@ CORRECTIONS — analyze the user's Greek for:
   - Spelling/accent errors (missing or wrong accent marks, wrong letters)
   Only include actual mistakes. Empty array if their Greek was correct.
   For each correction, "correct" should be the word in its correct form (dictionary/base form).
+  For "explanation", briefly explain WHY it's wrong in simple Greek.
+  For "grammar_rule", state the underlying rule if applicable (e.g. "τα ρήματα σε -ω παίρνουν -εις στο β' πρόσωπο").
+
 For profile_learnings, note anything new you learned about the user (a project, a plan, a preference, etc). Empty array if nothing new.
+
 For the reply: write ENTIRELY in Greek — no English whatsoever. You're a Greek friend texting naturally.
-IMPORTANT — if the user made Greek mistakes (vocabulary, grammar, or spelling), you MUST briefly correct them at the START of your reply before continuing the conversation. Use a concise format like: "* σχολείο, όχι σχολό" or "* θέλω να πάω, όχι θέλω να πήγω". Then continue chatting naturally. Don't skip mistakes — pointing them out is how they learn.
+IMPORTANT — if the user made Greek mistakes, you MUST briefly correct them at the START of your reply before continuing. Use format like: "* σχολείο, όχι σχολό (τα ουδέτερα σε -ειο δεν αλλάζουν)". Include a brief reason WHY so they learn the rule, not just the correction. Then continue chatting naturally.
 If they ask what a word means, explain it in simple Greek. If they ask you to teach them a word, ONLY use words from the WORDS FROM THEIR STUDY LIST above — never invent your own. If the conversation touched on a political topic, continue that thread — push back, agree loudly, add a new angle, or ask them what they think. Keep it to 1-3 sentences."""
 
 
@@ -342,6 +393,34 @@ def _process_correction(conn, correction: dict) -> None:
         conn.commit()
 
 
+def _detect_and_save_error_patterns(conn) -> None:
+    """Check for recurring error patterns and save them as profile notes for future reference."""
+    recent = fetchall_dicts(conn, """
+        SELECT tags FROM words
+        WHERE tags LIKE 'correction:%'
+        ORDER BY created_at DESC
+        LIMIT 20
+    """)
+
+    type_counts: dict[str, int] = {}
+    for row in recent:
+        error_type = (row.get("tags") or "").replace("correction:", "")
+        type_counts[error_type] = type_counts.get(error_type, 0) + 1
+
+    for error_type, count in type_counts.items():
+        if count >= 4:
+            # Check if we already noted this pattern
+            existing = fetchone_dict(conn,
+                "SELECT id FROM profile_notes WHERE category = ? AND content LIKE ?",
+                (f"weakness:{error_type}", f"%{error_type}%"))
+            if not existing:
+                save_learned_note(
+                    conn,
+                    f"weakness:{error_type}",
+                    f"Recurring {error_type} errors ({count} instances) — needs focused practice"
+                )
+
+
 def assess_and_reply(conn, config: Config, user_reply: str) -> dict:
     """Process a user reply: assess understanding, learn profile, generate reply.
 
@@ -364,15 +443,24 @@ def assess_and_reply(conn, config: Config, user_reply: str) -> dict:
     search_context = _maybe_search(user_reply, profile)
 
     # Load due words from SRS so replies can use them
-    from greekapp.srs import load_due_cards
+    from greekapp.srs import load_due_cards, get_leeches
     due_words = load_due_cards(conn, limit=10)
+
+    # Get leech words for special handling
+    leech_words = get_leeches(conn, limit=5)
+
+    # Get error patterns for proactive teaching
+    error_patterns = _get_error_patterns(conn)
 
     # Always use the full assessment flow so corrections are detected
     # even when there are no target words to assess.
 
     # Ask Claude to assess + reply
     import anthropic
-    prompt = _build_assessment_prompt(user_reply, words, conversation, profile, search_context, due_words)
+    prompt = _build_assessment_prompt(
+        user_reply, words, conversation, profile,
+        search_context, due_words, error_patterns, leech_words,
+    )
     client = anthropic.Anthropic(api_key=config.anthropic_api_key)
     response = client.messages.create(
         model="claude-sonnet-4-5-20250929",
@@ -403,6 +491,10 @@ def assess_and_reply(conn, config: Config, user_reply: str) -> dict:
     corrections = data.get("corrections", [])
     for correction in corrections:
         _process_correction(conn, correction)
+
+    # Detect recurring error patterns
+    if corrections:
+        _detect_and_save_error_patterns(conn)
 
     # Store profile learnings
     learnings = data.get("profile_learnings", [])
@@ -454,7 +546,7 @@ ABOUT THEM:
 {profile_text}
 {search_section}{due_section}
 Reply in 1-3 sentences ENTIRELY in Greek. No English at all.
-IMPORTANT — if the user made Greek mistakes (vocabulary, grammar, or spelling), briefly correct them at the START of your reply like: "* σχολείο, όχι σχολό" then continue chatting. Don't skip mistakes — pointing them out is how they learn.
+IMPORTANT — if the user made Greek mistakes (vocabulary, grammar, or spelling), briefly correct them at the START of your reply like: "* σχολείο, όχι σχολό (τα ουδέτερα σε -ειο δεν αλλάζουν)" — include a brief reason WHY so they learn the rule. Then continue chatting.
 If they ask what a word means, explain it in simple Greek. If they ask a factual question, use the NEWS/FACTS above to answer accurately. If they ask you to teach them a word, ONLY pick from the WORDS FROM THEIR STUDY LIST above — never invent your own. Just the message, nothing else."""
 
     import anthropic

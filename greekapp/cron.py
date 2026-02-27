@@ -124,15 +124,26 @@ def run() -> None:
         # --- Step 3: Maybe send a proactive message ---
         try:
             from greekapp.scheduler import should_send_now
-            from greekapp.messenger import compose_and_send
+            from greekapp.messenger import (
+                compose_and_send,
+                compose_recall_and_send,
+                should_use_recall,
+            )
 
             if should_send_now(conn, config):
-                print("Scheduler says send...")
-                result = compose_and_send(conn, config)
+                # Decide between teaching mode and recall mode
+                if should_use_recall(conn):
+                    print("Scheduler says send (recall mode)...")
+                    result = compose_recall_and_send(conn, config)
+                else:
+                    print("Scheduler says send (teaching mode)...")
+                    result = compose_and_send(conn, config)
+
                 if "error" in result:
                     print(f"  Error: {result['error']}")
                 else:
-                    print(f"  Sent: {result['message'][:60]}")
+                    mode = result.get("mode", "teaching")
+                    print(f"  Sent [{mode}]: {result['message'][:60]}")
             else:
                 print("Scheduler says skip this slot")
         except Exception as exc:

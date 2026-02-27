@@ -1,4 +1,9 @@
-"""Message composition — picks words, generates natural messages via Claude, sends via Telegram."""
+"""Message composition — picks words, generates natural messages via Claude, sends via Telegram.
+
+Supports two message modes:
+  1. Teaching mode (default): Embeds target vocabulary into natural Greek messages.
+  2. Recall mode (~30%): Tests active recall with translation/meaning/cloze prompts.
+"""
 
 from __future__ import annotations
 
@@ -15,23 +20,36 @@ logger = logging.getLogger(__name__)
 from greekapp.config import Config
 from greekapp.db import execute, fetchall_dicts, fetchone_dict, ph
 from greekapp.profile import get_full_profile, profile_to_prompt_text
-from greekapp.srs import CardState, DEFAULT_EASE, load_due_cards
+from greekapp.srs import CardState, DEFAULT_EASE, load_due_cards, get_retention_stats
 from greekapp.telegram import send_message
+
+
+RECALL_PROBABILITY = 0.3  # 30% of proactive messages are recall prompts
 
 
 def select_words(conn, new_limit: int = 3, review_limit: int = 3) -> list[CardState]:
     """Pick a mix of new + due review words for a message.
 
-    Returns 3-5 words: review words first, then new words to fill.
-    """
-    due = load_due_cards(conn, limit=10)
+    Prioritizes:
+    1. Recently failed words (quality < 3 in last 24h) — re-introduce for within-session practice
+    2. Learning-phase words (rep < 2) that are due — they need a second look
+    3. Regular review words (seen before, due)
+    4. New words to fill remaining slots
 
-    # Split into review words (seen before) and new words (never reviewed)
-    review_words = [c for c in due if c.last_review is not None]
+    Returns 3-5 words.
+    """
+    due = load_due_cards(conn, limit=15)
+
+    # Split by category
+    learning_words = [c for c in due if c.last_review is not None and c.is_learning]
+    review_words = [c for c in due if c.last_review is not None and not c.is_learning]
     new_words = [c for c in due if c.last_review is None]
 
-    # Take review words first, then fill remaining slots with new words
-    selected = review_words[:review_limit]
+    # Build selection: learning phase first (they need reinforcement), then review, then new
+    selected: list[CardState] = []
+    selected.extend(learning_words[:2])  # Up to 2 learning-phase words
+    remaining = max(0, review_limit - len(selected))
+    selected.extend(review_words[:remaining])
     remaining_slots = max(0, 5 - len(selected))
     selected.extend(new_words[:min(new_limit, remaining_slots)])
 
@@ -42,6 +60,32 @@ def select_words(conn, new_limit: int = 3, review_limit: int = 3) -> list[CardSt
 
     random.shuffle(selected)
     return selected
+
+
+def select_recall_words(conn) -> list[CardState]:
+    """Pick 1-2 review words for active recall testing.
+
+    Only picks words that have been seen before (not brand new) so the user
+    actually has something to recall. Prefers words that are due and have
+    moderate intervals (not too new, not too well-known).
+    """
+    due = load_due_cards(conn, limit=20)
+    # Only review words (seen at least once, past learning phase)
+    candidates = [c for c in due if c.last_review is not None and c.repetition >= 2]
+
+    if not candidates:
+        # Fall back to any seen words
+        candidates = [c for c in due if c.last_review is not None]
+
+    if not candidates:
+        return []
+
+    # Prefer words with moderate intervals (1-30 days) — sweet spot for recall testing
+    moderate = [c for c in candidates if 1.0 <= c.interval <= 30.0]
+    if moderate:
+        candidates = moderate
+
+    return random.sample(candidates, min(2, len(candidates)))
 
 
 def _get_recent_messages(conn, limit: int = 10) -> list[dict]:
@@ -196,14 +240,14 @@ def fetch_news_context(profile: dict) -> str:
     """Fetch curated political items + Google News headlines for the user's interests."""
     snippets: list[str] = []
 
-    # 1. Curated political items (2 feeds × 2 articles with descriptions)
+    # 1. Curated political items (2 feeds x 2 articles with descriptions)
     political_items = _fetch_curated_political_items(max_feeds=2)
     for item in political_items:
         date_part = f" ({item['pub_date']})" if item["pub_date"] else ""
         desc_part = f" — {item['description']}" if item["description"] else ""
         snippets.append(f"[{item['tag']}] {item['title']}{date_part}{desc_part}")
 
-    # 2. Google News search (existing logic — 2 random profile topics × 3 headlines)
+    # 2. Google News search (existing logic — 2 random profile topics x 3 headlines)
     topics = _build_search_topics(profile)
     if topics:
         selected = random.sample(topics, min(2, len(topics)))
@@ -232,7 +276,7 @@ def _verify_words_in_message(words: list[CardState], message_text: str) -> tuple
     """Check which target words actually appear in the generated message.
 
     Uses accent-normalized stem matching (first 4+ chars) to handle Greek
-    inflections where accents shift (e.g. βελτίωση → βελτιώσεις).
+    inflections where accents shift (e.g. βελτίωση -> βελτιώσεις).
     Returns (verified, dropped) tuples.
     """
     text_norm = _strip_accents(message_text.lower())
@@ -330,6 +374,66 @@ RULES:
 Write your message now. Just the message text, nothing else."""
 
 
+def build_recall_prompt(
+    profile: dict,
+    words: list[CardState],
+    history: list[dict],
+) -> str:
+    """Build a prompt for active recall testing.
+
+    Generates a natural-sounding message that tests whether the user
+    can recall specific vocabulary. Uses varied formats:
+    - Translation recall (EN -> GR): "Πώς λέμε X στα ελληνικά;"
+    - Meaning recall (GR -> ?): "Θυμάσαι τι σημαίνει X;"
+    - Cloze/context: A sentence with a blank or hint
+    """
+    profile_text = profile_to_prompt_text(profile)
+
+    word_items = []
+    for w in words:
+        word_items.append(f"  - {w.greek} = {w.english} (word_id: {w.word_id})")
+    word_list = "\n".join(word_items)
+
+    # Recent conversation for continuity
+    history_text = ""
+    if history:
+        history_lines = []
+        for msg in reversed(history[:4]):
+            prefix = "You" if msg["direction"] == "out" else "Them"
+            history_lines.append(f"{prefix}: {msg['body']}")
+        history_text = "\n".join(history_lines)
+
+    recall_type = random.choice(["translate", "meaning", "cloze"])
+
+    type_instructions = {
+        "translate": "Ask them how to say the English meaning in Greek. Be casual, like you forgot the word yourself. Example: 'Πώς λέμε improvement στα ελληνικά; Το ξέχασα...'",
+        "meaning": "Use the Greek word and ask if they remember what it means. Example: 'Θυμάσαι τι σημαίνει βελτίωση; Μου το είπες πρόσφατα...'",
+        "cloze": "Write a natural Greek sentence with a blank (___) where the target word should go, and give a hint. Example: 'Χρειαζόμαστε μεγάλη ___ στην οικονομία (starts with β)'. The hint can be the first letter or a brief description.",
+    }
+
+    return f"""You are a Greek friend casually testing your friend's vocabulary. Write in Greek.
+
+ABOUT THEM:
+{profile_text}
+
+WORDS TO TEST (pick ONE word to quiz them on):
+{word_list}
+
+RECALL TYPE: {recall_type}
+{type_instructions[recall_type]}
+
+{f"RECENT CONVERSATION:{chr(10)}{history_text}" if history_text else ""}
+
+RULES:
+- Pick ONE word from the list above to test
+- Make it feel natural — like you're having a conversation, not giving a quiz
+- Write entirely in Greek (except the English word if using translate mode)
+- Keep it casual and friendly, 1-2 sentences max
+- Don't give away the answer!
+
+Write your message now. Just the message text, nothing else."""
+
+
 def compose_and_send(conn, config: Config) -> dict:
     """Full pipeline: select words -> generate message -> send -> record.
 
@@ -401,4 +505,84 @@ def compose_and_send(conn, config: Config) -> dict:
         "words": [{"greek": w.greek, "english": w.english} for w in verified],
         "words_dropped": [{"greek": w.greek, "english": w.english} for w in dropped],
         "telegram_msg_id": telegram_msg_id,
+        "mode": "teaching",
     }
+
+
+def compose_recall_and_send(conn, config: Config) -> dict:
+    """Active recall pipeline: pick review words -> generate recall prompt -> send.
+
+    Returns a dict with 'message', 'words', 'mode': 'recall'.
+    """
+    words = select_recall_words(conn)
+    if not words:
+        # Fall back to teaching mode if no recall candidates
+        return compose_and_send(conn, config)
+
+    profile = get_full_profile(conn)
+    history = _get_recent_messages(conn)
+    prompt = build_recall_prompt(profile, words, history)
+
+    # Generate recall message via Claude
+    import anthropic
+    client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+    response = client.messages.create(
+        model="claude-sonnet-4-5-20250929",
+        max_tokens=200,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    message_text = response.content[0].text.strip()
+
+    # Send the recall prompt
+    tg_response = send_message(
+        config.telegram_bot_token,
+        config.telegram_chat_id,
+        message_text,
+        parse_mode="",
+    )
+
+    # Record the recall words as targets so the assessor knows what to evaluate
+    word_ids = json.dumps([w.word_id for w in words])
+    telegram_msg_id = tg_response.get("result", {}).get("message_id")
+
+    execute(
+        conn,
+        """INSERT INTO messages (direction, body, telegram_msg_id, target_word_ids)
+           VALUES (?, ?, ?, ?)""",
+        ("out", message_text, telegram_msg_id, word_ids),
+    )
+
+    # Record in send_log
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    last_msg = fetchone_dict(conn, "SELECT id FROM messages ORDER BY id DESC LIMIT 1")
+    msg_id = last_msg["id"] if last_msg else None
+    execute(conn, "INSERT INTO send_log (sent_date, message_id) VALUES (?, ?)", (today, msg_id))
+    conn.commit()
+
+    return {
+        "message": message_text,
+        "words": [{"greek": w.greek, "english": w.english} for w in words],
+        "telegram_msg_id": telegram_msg_id,
+        "mode": "recall",
+    }
+
+
+def should_use_recall(conn) -> bool:
+    """Decide whether to use recall mode for the next proactive message.
+
+    Uses RECALL_PROBABILITY (~30%) but adapts based on retention:
+    - If retention is dropping, increase recall frequency
+    - If retention is high, keep the mix interesting with more teaching
+    """
+    stats = get_retention_stats(conn)
+
+    prob = RECALL_PROBABILITY
+
+    # If retention is declining, do more recall to reinforce
+    if stats["quality_trend"] == "declining":
+        prob = min(0.5, prob + 0.15)
+    # If retention is very high, slightly reduce recall
+    elif stats["recent_retention"] > 85 and stats["recent_reviews"] > 10:
+        prob = max(0.15, prob - 0.1)
+
+    return random.random() < prob

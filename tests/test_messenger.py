@@ -1,4 +1,4 @@
-"""Tests for message composition — word selection, prompt building, RSS fetching."""
+"""Tests for message composition — word selection, prompt building, RSS fetching, recall mode."""
 
 import tempfile
 from pathlib import Path
@@ -6,6 +6,7 @@ from pathlib import Path
 import greekapp.db as db_module
 from greekapp.db import execute, get_connection, init_db
 from greekapp.messenger import (
+    RECALL_PROBABILITY,
     _build_search_topics,
     _bold_target_words,
     _fetch_rss_headlines,
@@ -13,9 +14,11 @@ from greekapp.messenger import (
     _POLITICAL_FEEDS,
     _verify_words_in_message,
     build_generation_prompt,
+    build_recall_prompt,
+    select_recall_words,
     select_words,
 )
-from greekapp.srs import CardState
+from greekapp.srs import CardState, LEARNING_STEP, record_review
 
 _ORIG_DB_PATH = db_module.DB_PATH
 
@@ -70,6 +73,62 @@ def test_select_words_caps_at_five():
     conn.close()
 
 
+def test_select_words_prioritizes_learning_phase():
+    """Words in the learning phase (rep < 2) should be prioritized."""
+    conn = get_connection()
+    _add_word(conn, "μαθαίνω", "learn")
+    _add_word(conn, "γράφω", "write")
+    _add_word(conn, "νέα", "new word")
+
+    # Make word 1 a learning-phase word (reviewed once, short interval)
+    # Then backdate the review so the learning step interval has elapsed
+    card = CardState(word_id=1, greek="μαθαίνω", english="learn")
+    record_review(conn, card, 4)  # rep=1, interval=LEARNING_STEP
+
+    # Backdate the review so the word is due again
+    execute(conn, "UPDATE reviews SET reviewed_at = datetime('now', '-1 hour') WHERE word_id = 1")
+    conn.commit()
+
+    words = select_words(conn)
+    # The learning word should be in the selection
+    greeks = [w.greek for w in words]
+    assert "μαθαίνω" in greeks
+    conn.close()
+
+
+# --- select_recall_words ---
+
+def test_select_recall_words_empty_db():
+    conn = get_connection()
+    words = select_recall_words(conn)
+    assert words == []
+    conn.close()
+
+
+def test_select_recall_words_needs_reviewed_words():
+    """Recall mode only picks words that have been reviewed (past learning phase)."""
+    conn = get_connection()
+    _add_word(conn, "σπίτι", "house")
+    _add_word(conn, "γάτα", "cat")
+
+    # Make both words graduated (rep >= 2)
+    for wid, greek, english in [(1, "σπίτι", "house"), (2, "γάτα", "cat")]:
+        card = CardState(word_id=wid, greek=greek, english=english)
+        card = record_review(conn, card, 4)  # rep=1
+        card = record_review(conn, card, 4)  # rep=2
+        record_review(conn, card, 4)  # rep=3
+
+    # Wait... they won't be due yet. Let's check what we get anyway.
+    # Due cards are based on interval, and with rep=3 interval=6 days.
+    # For testing, new unreviewed words are also "due" but recall skips them.
+    _add_word(conn, "νέα", "new")
+    words = select_recall_words(conn)
+    # Should not include brand new unreviewed words
+    for w in words:
+        assert w.last_review is not None or w.repetition >= 2
+    conn.close()
+
+
 # --- build_generation_prompt ---
 
 def test_prompt_contains_target_words():
@@ -102,6 +161,21 @@ def test_prompt_includes_news_context():
     words = [CardState(word_id=1, greek="γεια", english="hello")]
     prompt = build_generation_prompt({}, words, [], news_context="Arsenal beat Chelsea 3-0")
     assert "Arsenal beat Chelsea" in prompt
+
+
+# --- build_recall_prompt ---
+
+def test_recall_prompt_contains_word():
+    words = [CardState(word_id=1, greek="βελτίωση", english="improvement")]
+    prompt = build_recall_prompt({}, words, [])
+    assert "βελτίωση" in prompt
+    assert "improvement" in prompt
+
+
+def test_recall_prompt_has_recall_type():
+    words = [CardState(word_id=1, greek="βελτίωση", english="improvement")]
+    prompt = build_recall_prompt({}, words, [])
+    assert any(t in prompt for t in ["translate", "meaning", "cloze"])
 
 
 # --- _build_search_topics ---
@@ -359,3 +433,9 @@ def test_prompt_requires_all_target_words():
     words = [CardState(word_id=1, greek="γεια", english="hello")]
     prompt = build_generation_prompt({}, words, [])
     assert "MUST use ALL" in prompt
+
+
+# --- RECALL_PROBABILITY ---
+
+def test_recall_probability_is_reasonable():
+    assert 0.1 <= RECALL_PROBABILITY <= 0.5
