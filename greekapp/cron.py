@@ -115,6 +115,7 @@ def run() -> None:
                             print(f"  {a['greek']}: quality={a['quality']}")
             except Exception as exc:
                 print(f"Error processing update {last_update_id}: {exc}")
+                conn.rollback()
 
         # Save our position so we don't reprocess messages (including failed ones)
         if updates:

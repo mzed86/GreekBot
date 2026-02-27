@@ -148,10 +148,11 @@ def get_leeches(conn, limit: int = 20) -> list[CardState]:
     """Return all leech words (words with 4+ consecutive failures)."""
     # Get words with recent low-quality reviews
     candidates = fetchall_dicts(conn, """
-        SELECT DISTINCT r.word_id
+        SELECT r.word_id
         FROM reviews r
         WHERE r.quality < 3
-        ORDER BY r.reviewed_at DESC
+        GROUP BY r.word_id
+        ORDER BY MAX(r.reviewed_at) DESC
         LIMIT ?
     """, (limit * 3,))
 
