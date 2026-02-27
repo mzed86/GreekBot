@@ -178,9 +178,9 @@ def _get_word_card_state(conn, word_id: int) -> CardState:
         word_id=row["id"],
         greek=row["greek"],
         english=row["english"],
-        ease_factor=row["ease_factor"],
-        interval=row["interval"],
-        repetition=row["repetition"],
+        ease_factor=float(row["ease_factor"]),
+        interval=float(row["interval"]),
+        repetition=int(row["repetition"]),
         last_review=lr,
     )
 

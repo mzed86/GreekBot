@@ -243,9 +243,9 @@ def load_due_cards(conn, limit: int = 20) -> list[CardState]:
             word_id=row["id"],
             greek=row["greek"],
             english=row["english"],
-            ease_factor=row["ease_factor"],
-            interval=row["interval"],
-            repetition=row["repetition"],
+            ease_factor=float(row["ease_factor"]),
+            interval=float(row["interval"]),
+            repetition=int(row["repetition"]),
             last_review=lr,
         ))
     return cards
@@ -289,16 +289,16 @@ def get_retention_stats(conn) -> dict:
         avg_older = fetchone_dict(conn,
             "SELECT AVG(quality) AS avg_q FROM reviews WHERE reviewed_at < datetime('now', '-7 days')")
 
-    avg_recent_q = avg_recent["avg_q"] if avg_recent and avg_recent["avg_q"] else 0
-    avg_older_q = avg_older["avg_q"] if avg_older and avg_older["avg_q"] else 0
+    avg_recent_q = float(avg_recent["avg_q"]) if avg_recent and avg_recent["avg_q"] else 0.0
+    avg_older_q = float(avg_older["avg_q"]) if avg_older and avg_older["avg_q"] else 0.0
 
     return {
         "retention_rate": retention_rate,
         "recent_retention": recent_retention,
         "total_reviews": total_count,
         "recent_reviews": recent_total_count,
-        "avg_quality_recent": float(avg_recent_q),
-        "avg_quality_older": float(avg_older_q),
+        "avg_quality_recent": avg_recent_q,
+        "avg_quality_older": avg_older_q,
         "quality_trend": "improving" if avg_recent_q > avg_older_q + 0.3
                          else "declining" if avg_recent_q < avg_older_q - 0.3
                          else "stable",
