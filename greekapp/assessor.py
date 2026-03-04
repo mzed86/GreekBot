@@ -205,10 +205,10 @@ def _get_error_patterns(conn) -> str:
     """
     recent = fetchall_dicts(conn, """
         SELECT tags, greek, english FROM words
-        WHERE tags LIKE 'correction:%'
+        WHERE tags LIKE ?
         ORDER BY created_at DESC
         LIMIT 30
-    """)
+    """, ("correction:%",))
 
     if not recent:
         return ""
@@ -397,10 +397,10 @@ def _detect_and_save_error_patterns(conn) -> None:
     """Check for recurring error patterns and save them as profile notes for future reference."""
     recent = fetchall_dicts(conn, """
         SELECT tags FROM words
-        WHERE tags LIKE 'correction:%'
+        WHERE tags LIKE ?
         ORDER BY created_at DESC
         LIMIT 20
-    """)
+    """, ("correction:%",))
 
     type_counts: dict[str, int] = {}
     for row in recent:
