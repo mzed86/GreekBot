@@ -114,11 +114,11 @@ def generate_report(conn) -> str:
     # --- Error pattern analysis ---
     error_patterns = fetchall_dicts(conn, """
         SELECT tags, COUNT(*) AS cnt FROM words
-        WHERE tags LIKE 'correction:%'
+        WHERE tags LIKE ?
         GROUP BY tags
         ORDER BY cnt DESC
         LIMIT 5
-    """)
+    """, ("correction:%",))
 
     if error_patterns:
         lines = ["--- Error patterns ---"]
@@ -156,10 +156,10 @@ def generate_report(conn) -> str:
     # --- Profile notes learned ---
     notes = fetchall_dicts(conn, """
         SELECT category, content FROM profile_notes
-        WHERE category NOT LIKE 'system:%' AND category NOT LIKE 'weekly_%'
+        WHERE category NOT LIKE ? AND category NOT LIKE ?
         ORDER BY created_at DESC
         LIMIT 8
-    """)
+    """, ("system:%", "weekly_%"))
 
     if notes:
         lines = ["--- Learned about you ---"]
