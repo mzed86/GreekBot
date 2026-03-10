@@ -20,11 +20,14 @@ logger = logging.getLogger(__name__)
 from greekapp.config import Config
 from greekapp.db import execute, fetchall_dicts, fetchone_dict, ph
 from greekapp.profile import get_full_profile, profile_to_prompt_text
-from greekapp.srs import CardState, DEFAULT_EASE, load_due_cards, get_retention_stats
+from greekapp.srs import CardState, DEFAULT_EASE, load_due_cards, get_retention_stats, get_word_family, get_collocations
 from greekapp.telegram import send_message
 
 
 RECALL_PROBABILITY = 0.3  # 30% of proactive messages are recall prompts
+
+
+WORD_FAMILY_PROBABILITY = 0.3  # 30% chance to cluster word family members
 
 
 def select_words(conn, new_limit: int = 3, review_limit: int = 3) -> list[CardState]:
@@ -35,6 +38,10 @@ def select_words(conn, new_limit: int = 3, review_limit: int = 3) -> list[CardSt
     2. Learning-phase words (rep < 2) that are due — they need a second look
     3. Regular review words (seen before, due)
     4. New words to fill remaining slots
+
+    When a word has family members (shared root), sometimes includes a related
+    word to reinforce morphological awareness (research: word families reduce
+    mnemonic load and accelerate B2→C1 vocabulary growth).
 
     Returns 3-5 words.
     """
@@ -58,7 +65,50 @@ def select_words(conn, new_limit: int = 3, review_limit: int = 3) -> list[CardSt
         extras = [c for c in due if c not in selected]
         selected.extend(extras[:3 - len(selected)])
 
+    # Word family clustering: sometimes pull in a family member of a selected word
+    # to teach morphological patterns (e.g. γράφω + γραφείο in same message)
+    if selected and random.random() < WORD_FAMILY_PROBABILITY:
+        selected = _maybe_add_family_member(conn, selected, due)
+
     random.shuffle(selected)
+    return selected
+
+
+def _maybe_add_family_member(conn, selected: list[CardState], due: list[CardState]) -> list[CardState]:
+    """Try to add a word family member to the selection for morphological teaching."""
+    if len(selected) >= 5:
+        return selected
+
+    # Pick a random selected word and look for family members
+    candidates = [w for w in selected if w.word_id]
+    random.shuffle(candidates)
+
+    for word in candidates:
+        family = get_word_family(conn, word.word_id)
+        if not family:
+            continue
+
+        # Prefer family members that are also due
+        due_ids = {c.word_id for c in due}
+        selected_ids = {c.word_id for c in selected}
+        due_family = [f for f in family if f["id"] in due_ids and f["id"] not in selected_ids]
+
+        if due_family:
+            pick = random.choice(due_family)
+        else:
+            # Pick any family member not already selected
+            available = [f for f in family if f["id"] not in selected_ids]
+            if not available:
+                continue
+            pick = random.choice(available)
+
+        selected.append(CardState(
+            word_id=pick["id"],
+            greek=pick["greek"],
+            english=pick["english"],
+        ))
+        break
+
     return selected
 
 
@@ -322,11 +372,53 @@ def _bold_target_words(message_text: str, words: list[CardState]) -> str:
     return escaped
 
 
+def _build_word_family_context(conn, words: list[CardState]) -> str:
+    """Build context about word families for words in the selection.
+
+    When words share a root, Claude can mention the morphological connection
+    naturally (e.g. "γράφω... γραφείο..." in the same message).
+    """
+    family_notes = []
+    seen_roots = set()
+
+    for w in words:
+        family = get_word_family(conn, w.word_id)
+        if not family:
+            continue
+        # Get the root
+        from greekapp.db import fetchone_dict
+        word_row = fetchone_dict(conn, "SELECT root FROM words WHERE id = ?", (w.word_id,))
+        root = word_row.get("root", "") if word_row else ""
+        if root and root not in seen_roots:
+            seen_roots.add(root)
+            family_words = ", ".join(f"{f['greek']} ({f['english']})" for f in family[:4])
+            family_notes.append(f"  {w.greek} shares root '{root}' with: {family_words}")
+
+    if not family_notes:
+        return ""
+    return "WORD FAMILIES (these words share morphological roots — mentioning the connection naturally helps learning):\n" + "\n".join(family_notes) + "\n"
+
+
+def _build_collocation_context(conn, words: list[CardState]) -> str:
+    """Build collocation hints for target words."""
+    collocation_notes = []
+    for w in words:
+        collocations = get_collocations(conn, w.word_id)
+        if collocations:
+            colloc_str = ", ".join(collocations[:3])
+            collocation_notes.append(f"  {w.greek}: commonly used in — {colloc_str}")
+
+    if not collocation_notes:
+        return ""
+    return "COLLOCATIONS (use these natural word combinations when possible — collocations are key to C1-level Greek):\n" + "\n".join(collocation_notes) + "\n"
+
+
 def build_generation_prompt(
     profile: dict,
     words: list[CardState],
     history: list[dict],
     news_context: str = "",
+    conn=None,
 ) -> str:
     """Build the Claude prompt for message generation."""
     profile_text = profile_to_prompt_text(profile)
@@ -334,6 +426,13 @@ def build_generation_prompt(
 
     word_list = ", ".join(f"{w.greek} ({w.english})" for w in words)
     word_section = f"Target words to weave in: {word_list}\n"
+
+    # Word family and collocation context (research-backed)
+    family_context = ""
+    collocation_context = ""
+    if conn:
+        family_context = _build_word_family_context(conn, words)
+        collocation_context = _build_collocation_context(conn, words)
 
     # Recent conversation for continuity
     history_text = ""
@@ -354,13 +453,15 @@ ABOUT THEM:
 TIME: {time_context}
 
 {word_section}
-RULES:
+{family_context}{collocation_context}RULES:
 - Write 1-3 short sentences in Greek, like a real text message
 - Write ONLY in Greek. Do NOT include English translations, parenthetical or otherwise.
 - You MUST use ALL of the target words above. Every single one. This is critical.
 - If a word doesn't fit the current topic, shift the topic slightly to include it
 - Use natural Greek grammar and sentence structure — inflect words as needed
 - NEVER list vocabulary or make it feel like a flashcard or lesson
+- If target words share a root (see WORD FAMILIES above), try to use them in a way that highlights the connection naturally — e.g. same sentence or adjacent sentences
+- When a word has common collocations listed, prefer using those natural combinations
 - Reference their actual interests and life when possible — use the NEWS CONTEXT below if available
 - Match the time of day naturally
 - Warm, casual tone — you're friends
@@ -378,6 +479,7 @@ def build_recall_prompt(
     profile: dict,
     words: list[CardState],
     history: list[dict],
+    conn=None,
 ) -> str:
     """Build a prompt for active recall testing.
 
@@ -386,6 +488,8 @@ def build_recall_prompt(
     - Translation recall (EN -> GR): "Πώς λέμε X στα ελληνικά;"
     - Meaning recall (GR -> ?): "Θυμάσαι τι σημαίνει X;"
     - Cloze/context: A sentence with a blank or hint
+    - Word family: "What other words come from root X?"
+    - Collocation: "What word goes with X in the expression ___?"
     """
     profile_text = profile_to_prompt_text(profile)
 
@@ -393,6 +497,26 @@ def build_recall_prompt(
     for w in words:
         word_items.append(f"  - {w.greek} = {w.english} (word_id: {w.word_id})")
     word_list = "\n".join(word_items)
+
+    # Build enriched context for word family and collocation modes
+    family_context = ""
+    collocation_context = ""
+    available_types = ["translate", "meaning", "cloze"]
+
+    if conn:
+        for w in words:
+            family = get_word_family(conn, w.word_id)
+            if family:
+                family_words = ", ".join(f"{f['greek']} ({f['english']})" for f in family[:4])
+                family_context += f"  {w.greek} (root family): {family_words}\n"
+                if "word_family" not in available_types:
+                    available_types.append("word_family")
+
+            collocations = get_collocations(conn, w.word_id)
+            if collocations:
+                collocation_context += f"  {w.greek}: {', '.join(collocations[:3])}\n"
+                if "collocation" not in available_types:
+                    available_types.append("collocation")
 
     # Recent conversation for continuity
     history_text = ""
@@ -403,12 +527,14 @@ def build_recall_prompt(
             history_lines.append(f"{prefix}: {msg['body']}")
         history_text = "\n".join(history_lines)
 
-    recall_type = random.choice(["translate", "meaning", "cloze"])
+    recall_type = random.choice(available_types)
 
     type_instructions = {
         "translate": "Ask them how to say the English meaning in Greek. Be casual, like you forgot the word yourself. Example: 'Πώς λέμε improvement στα ελληνικά; Το ξέχασα...'",
         "meaning": "Use the Greek word and ask if they remember what it means. Example: 'Θυμάσαι τι σημαίνει βελτίωση; Μου το είπες πρόσφατα...'",
         "cloze": "Write a natural Greek sentence with a blank (___) where the target word should go, and give a hint. Example: 'Χρειαζόμαστε μεγάλη ___ στην οικονομία (starts with β)'. The hint can be the first letter or a brief description.",
+        "word_family": f"Give them a word from the family and ask what related words they know with the same root. Example: 'Ξέρεις τη λέξη γράφω — ποιες άλλες λέξεις ξέρεις από την ίδια ρίζα;' This tests morphological awareness.\n\nWORD FAMILY INFO:\n{family_context}",
+        "collocation": f"Give them part of a common collocation and ask them to complete it. Example: 'Λαμβάνω ___; Ποια λέξη πάει;' or 'Ξέρεις τι λέμε μετά το «λαμβάνω» όταν μιλάμε για μέτρα;' This tests collocation knowledge.\n\nCOLLOCATION INFO:\n{collocation_context}",
     }
 
     return f"""You are a Greek friend casually testing your friend's vocabulary. Write in Greek.
@@ -446,7 +572,7 @@ def compose_and_send(conn, config: Config) -> dict:
     profile = get_full_profile(conn)
     history = _get_recent_messages(conn)
     news_context = fetch_news_context(profile)
-    prompt = build_generation_prompt(profile, words, history, news_context=news_context)
+    prompt = build_generation_prompt(profile, words, history, news_context=news_context, conn=conn)
 
     # Generate message via Claude
     import anthropic
@@ -521,7 +647,7 @@ def compose_recall_and_send(conn, config: Config) -> dict:
 
     profile = get_full_profile(conn)
     history = _get_recent_messages(conn)
-    prompt = build_recall_prompt(profile, words, history)
+    prompt = build_recall_prompt(profile, words, history, conn=conn)
 
     # Generate recall message via Claude
     import anthropic

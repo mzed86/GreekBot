@@ -142,6 +142,19 @@ def generate_report(conn) -> str:
             lines.append(f"  {c['greek']} ({c['english']}) [{ctype}]")
         sections.append("\n".join(lines))
 
+    # --- Word families ---
+    family_count = fetchone_dict(conn, "SELECT COUNT(DISTINCT root) AS cnt FROM words WHERE root IS NOT NULL AND root != ''")["cnt"]
+    words_with_roots = fetchone_dict(conn, "SELECT COUNT(*) AS cnt FROM words WHERE root IS NOT NULL AND root != ''")["cnt"]
+    words_with_collocations = fetchone_dict(conn, "SELECT COUNT(*) AS cnt FROM words WHERE collocations IS NOT NULL AND collocations != ''")["cnt"]
+
+    if family_count > 0 or words_with_collocations > 0:
+        morphology_section = "--- Morphology & Collocations ---\n"
+        if family_count > 0:
+            morphology_section += f"Word families: {family_count} roots covering {words_with_roots} words\n"
+        if words_with_collocations > 0:
+            morphology_section += f"Words with collocations: {words_with_collocations}"
+        sections.append(morphology_section)
+
     # --- Due now ---
     from greekapp.srs import load_due_cards
     due = load_due_cards(conn, limit=100)

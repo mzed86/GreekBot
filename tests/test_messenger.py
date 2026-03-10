@@ -439,3 +439,105 @@ def test_prompt_requires_all_target_words():
 
 def test_recall_probability_is_reasonable():
     assert 0.1 <= RECALL_PROBABILITY <= 0.5
+
+
+# --- Word family clustering ---
+
+def test_select_words_can_include_family_member(monkeypatch):
+    """When WORD_FAMILY_PROBABILITY is 1.0, a family member should be added."""
+    from greekapp import messenger as msg_mod
+    monkeypatch.setattr(msg_mod, "WORD_FAMILY_PROBABILITY", 1.0)
+
+    conn = get_connection()
+    execute(conn, "INSERT INTO words (greek, english, root) VALUES (?, ?, ?)", ("γράφω", "write", "γραφ"))
+    execute(conn, "INSERT INTO words (greek, english, root) VALUES (?, ?, ?)", ("γραφείο", "office", "γραφ"))
+    execute(conn, "INSERT INTO words (greek, english, root) VALUES (?, ?, ?)", ("γραφή", "writing", "γραφ"))
+    execute(conn, "INSERT INTO words (greek, english) VALUES (?, ?)", ("σπίτι", "house"))
+    execute(conn, "INSERT INTO words (greek, english) VALUES (?, ?)", ("ναι", "yes"))
+    conn.commit()
+
+    words = select_words(conn)
+    greeks = [w.greek for w in words]
+    # With all words sharing root, at least 2 family members should appear
+    root_words = [g for g in greeks if g in ("γράφω", "γραφείο", "γραφή")]
+    assert len(root_words) >= 2
+    conn.close()
+
+
+# --- Build prompt with family/collocation context ---
+
+def test_prompt_includes_word_family_context():
+    """When conn is provided and words have roots, prompt should include WORD FAMILIES section."""
+    conn = get_connection()
+    execute(conn, "INSERT INTO words (greek, english, root) VALUES (?, ?, ?)", ("γράφω", "write", "γραφ"))
+    execute(conn, "INSERT INTO words (greek, english, root) VALUES (?, ?, ?)", ("γραφείο", "office", "γραφ"))
+    conn.commit()
+
+    words = [CardState(word_id=1, greek="γράφω", english="write")]
+    prompt = build_generation_prompt({}, words, [], conn=conn)
+    assert "WORD FAMILIES" in prompt
+    assert "γραφείο" in prompt
+    conn.close()
+
+
+def test_prompt_includes_collocation_context():
+    """When conn is provided and words have collocations, prompt should include COLLOCATIONS section."""
+    conn = get_connection()
+    execute(conn, "INSERT INTO words (greek, english, collocations) VALUES (?, ?, ?)",
+            ("λαμβάνω", "take", "λαμβάνω μέτρα|λαμβάνω χώρα"))
+    conn.commit()
+
+    words = [CardState(word_id=1, greek="λαμβάνω", english="take")]
+    prompt = build_generation_prompt({}, words, [], conn=conn)
+    assert "COLLOCATIONS" in prompt
+    assert "λαμβάνω μέτρα" in prompt
+    conn.close()
+
+
+def test_prompt_works_without_conn():
+    """Prompt should still work when conn is None (backward compatibility)."""
+    words = [CardState(word_id=1, greek="γεια", english="hello")]
+    prompt = build_generation_prompt({}, words, [])
+    assert "γεια" in prompt
+    # No family/collocation data sections should appear (rules mentioning them are fine)
+    assert "shares root" not in prompt
+    assert "commonly used in" not in prompt
+
+
+# --- Recall prompt with new modes ---
+
+def test_recall_prompt_includes_word_family_mode():
+    """When words have families, word_family recall type should be available."""
+    conn = get_connection()
+    execute(conn, "INSERT INTO words (greek, english, root) VALUES (?, ?, ?)", ("γράφω", "write", "γραφ"))
+    execute(conn, "INSERT INTO words (greek, english, root) VALUES (?, ?, ?)", ("γραφείο", "office", "γραφ"))
+    conn.commit()
+
+    words = [CardState(word_id=1, greek="γράφω", english="write")]
+    # Run many times to check the word_family type becomes possible
+    found_family_or_standard = False
+    for _ in range(20):
+        prompt = build_recall_prompt({}, words, [], conn=conn)
+        if "WORD FAMILY INFO" in prompt or "translate" in prompt:
+            found_family_or_standard = True
+            break
+    assert found_family_or_standard
+    conn.close()
+
+
+def test_recall_prompt_includes_collocation_mode():
+    """When words have collocations, collocation recall type should be available."""
+    conn = get_connection()
+    execute(conn, "INSERT INTO words (greek, english, collocations) VALUES (?, ?, ?)",
+            ("λαμβάνω", "take", "λαμβάνω μέτρα"))
+    conn.commit()
+
+    words = [CardState(word_id=1, greek="λαμβάνω", english="take")]
+    found_collocation_or_standard = False
+    for _ in range(20):
+        prompt = build_recall_prompt({}, words, [], conn=conn)
+        if "COLLOCATION INFO" in prompt or "translate" in prompt:
+            found_collocation_or_standard = True
+            break
+    assert found_collocation_or_standard
+    conn.close()

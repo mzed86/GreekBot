@@ -263,6 +263,26 @@ def _build_assessment_prompt(
         leech_list = ", ".join(f"{w.greek} ({w.english})" for w in leech_words[:5])
         leech_section = f"\nLEECH WORDS (they keep failing these — if one comes up, provide a mnemonic, etymology, or memorable example): {leech_list}\n"
 
+    # Word family and collocation context for richer assessment
+    from greekapp.srs import get_word_family, get_collocations
+    family_section = ""
+    collocation_section = ""
+    if words:
+        family_notes = []
+        colloc_notes = []
+        for w in words:
+            family = get_word_family(conn, w["id"])
+            if family:
+                family_words = ", ".join(f"{f['greek']} ({f['english']})" for f in family[:4])
+                family_notes.append(f"  {w['greek']} shares root with: {family_words}")
+            collocations = get_collocations(conn, w["id"])
+            if collocations:
+                colloc_notes.append(f"  {w['greek']}: {', '.join(collocations[:3])}")
+        if family_notes:
+            family_section = "\nWORD FAMILIES (if the user demonstrates knowledge of related words from the same root, note it positively — morphological awareness is a sign of deep learning):\n" + "\n".join(family_notes) + "\n"
+        if colloc_notes:
+            collocation_section = "\nEXPECTED COLLOCATIONS (if the user uses these natural word combinations, give quality 5 — collocation mastery is C1-level skill):\n" + "\n".join(colloc_notes) + "\n"
+
     conv_lines = []
     for msg in reversed(conversation):
         prefix = "Bot" if msg["direction"] == "out" else "User"
@@ -289,7 +309,7 @@ GREEK WORDS RECENTLY SENT:
 
 USER PROFILE:
 {profile_text}
-{search_section}{due_section}{leech_section}{error_patterns}
+{search_section}{due_section}{leech_section}{family_section}{collocation_section}{error_patterns}
 Analyze the user's reply and respond with ONLY valid JSON (no other text):
 
 {{

@@ -88,3 +88,24 @@ def test_import_duplicates_dont_destroy_earlier_inserts():
     words = sorted(r["greek"] for r in rows)
     assert words == sorted(["δύο", "ένα", "τέσσερα", "τρία"])
     conn.close()
+
+
+def test_import_with_root_and_collocations():
+    """CSV files with root and collocations columns should import correctly."""
+    path = _tmp_csv(
+        "greek,english,root,collocations\n"
+        "γράφω,write,γραφ,\n"
+        "γραφείο,office,γραφ,\n"
+        "λαμβάνω,take,,λαμβάνω μέτρα|λαμβάνω χώρα\n"
+    )
+    conn = get_connection()
+    result = import_csv(conn, path)
+    assert result["added"] == 3
+
+    from greekapp.db import fetchone_dict
+    word = fetchone_dict(conn, "SELECT root, collocations FROM words WHERE greek = ?", ("γράφω",))
+    assert word["root"] == "γραφ"
+
+    word2 = fetchone_dict(conn, "SELECT root, collocations FROM words WHERE greek = ?", ("λαμβάνω",))
+    assert "λαμβάνω μέτρα" in word2["collocations"]
+    conn.close()
