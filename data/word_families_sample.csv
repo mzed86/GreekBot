@@ -1,0 +1,27 @@
+greek,english,part_of_speech,root,collocations,tags
+γράφω,to write,verb,γραφ,,word_family
+γραφή,writing/script,noun,γραφ,,word_family
+γραφείο,office/desk,noun,γραφ,,word_family
+υπογράφω,to sign,verb,γραφ,υπογράφω συμβόλαιο|υπογράφω συμφωνία,word_family
+παραγράφω,to cross out,verb,γραφ,,word_family
+καταγράφω,to record,verb,γραφ,,word_family
+συγγραφέας,author/writer,noun,γραφ,,word_family
+λαμβάνω,to take/receive,verb,λαβ,λαμβάνω μέτρα|λαμβάνω χώρα|λαμβάνω μέρος|λαμβάνω υπόψη,word_family
+παραλαμβάνω,to receive/collect,verb,λαβ,,word_family
+συλλαμβάνω,to arrest/conceive,verb,λαβ,,word_family
+αποφασίζω,to decide,verb,αποφασ,,word_family
+απόφαση,decision,noun,αποφασ,παίρνω απόφαση|λαμβάνω απόφαση,word_family
+αποφασιστικός,decisive,adjective,αποφασ,,word_family
+αποφασιστικότητα,determination,noun,αποφασ,,word_family
+εκπαιδεύω,to educate/train,verb,εκπαιδ,,word_family
+εκπαίδευση,education/training,noun,εκπαιδ,,word_family
+εκπαιδευτικός,educational/teacher,adjective,εκπαιδ,εκπαιδευτικό πρόγραμμα|εκπαιδευτικό σύστημα,word_family
+βελτιώνω,to improve,verb,βελτ,,word_family
+βελτίωση,improvement,noun,βελτ,,word_family
+ενισχύω,to strengthen/reinforce,verb,ενισχ,,word_family
+ενίσχυση,reinforcement,noun,ενισχ,,word_family
+κάνω,to do/make,verb,,κάνω λάθος|κάνω παρέα|κάνω τα στραβά μάτια|κάνω καταγγελία,collocations
+βγάζω,to take out/remove,verb,,βγάζω άκρη|βγάζω λόγο|βγάζω τα σπασμένα,collocations
+δίνω,to give,verb,,δίνω εξετάσεις|δίνω σημασία|δίνω το παρών|δίνω λόγο,collocations
+παίρνω,to take/get,verb,,παίρνω απόφαση|παίρνω θέση|παίρνω μέρος|παίρνω φωτιά,collocations
+βάζω,to put/place,verb,,βάζω τα δυνατά μου|βάζω στόχο|βάζω τέλος,collocations

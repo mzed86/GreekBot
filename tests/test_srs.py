@@ -12,9 +12,11 @@ from greekapp.srs import (
     LEARNING_STEP,
     LEECH_THRESHOLD,
     MIN_EASE,
+    get_collocations,
     get_consecutive_failures,
     get_leeches,
     get_retention_stats,
+    get_word_family,
     is_leech,
     load_due_cards,
     next_state,
@@ -302,6 +304,71 @@ def test_skip_tag_excludes_from_due():
         greeks = [c.greek for c in due]
         assert "όχι" in greeks
         assert "γεια" not in greeks
+        conn.close()
+    finally:
+        db_module.DB_PATH = _ORIG_DB_PATH
+        Path(tmp.name).unlink(missing_ok=True)
+
+
+# --- Word family ---
+
+def test_get_word_family_returns_related_words():
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    db_module.DB_PATH = Path(tmp.name)
+    try:
+        init_db()
+        conn = get_connection()
+        execute(conn, "INSERT INTO words (greek, english, root) VALUES (?, ?, ?)",
+                ("γράφω", "write", "γραφ"))
+        execute(conn, "INSERT INTO words (greek, english, root) VALUES (?, ?, ?)",
+                ("γραφείο", "office", "γραφ"))
+        execute(conn, "INSERT INTO words (greek, english, root) VALUES (?, ?, ?)",
+                ("γραφή", "writing", "γραφ"))
+        execute(conn, "INSERT INTO words (greek, english) VALUES (?, ?)",
+                ("σπίτι", "house"))
+        conn.commit()
+
+        # γράφω (id=1) should find γραφείο and γραφή
+        family = get_word_family(conn, 1)
+        assert len(family) == 2
+        family_greeks = {f["greek"] for f in family}
+        assert "γραφείο" in family_greeks
+        assert "γραφή" in family_greeks
+
+        # σπίτι (id=4, no root) should return empty
+        family = get_word_family(conn, 4)
+        assert family == []
+
+        conn.close()
+    finally:
+        db_module.DB_PATH = _ORIG_DB_PATH
+        Path(tmp.name).unlink(missing_ok=True)
+
+
+# --- Collocations ---
+
+def test_get_collocations_returns_list():
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    db_module.DB_PATH = Path(tmp.name)
+    try:
+        init_db()
+        conn = get_connection()
+        execute(conn, "INSERT INTO words (greek, english, collocations) VALUES (?, ?, ?)",
+                ("λαμβάνω", "take/receive", "λαμβάνω μέτρα|λαμβάνω χώρα|λαμβάνω μέρος"))
+        execute(conn, "INSERT INTO words (greek, english) VALUES (?, ?)",
+                ("σπίτι", "house"))
+        conn.commit()
+
+        collocations = get_collocations(conn, 1)
+        assert len(collocations) == 3
+        assert "λαμβάνω μέτρα" in collocations
+
+        # Word with no collocations
+        collocations = get_collocations(conn, 2)
+        assert collocations == []
+
         conn.close()
     finally:
         db_module.DB_PATH = _ORIG_DB_PATH

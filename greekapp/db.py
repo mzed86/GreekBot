@@ -118,8 +118,24 @@ def _init_sqlite(conn) -> None:
             example_el  TEXT,
             example_en  TEXT,
             tags        TEXT,  -- comma-separated
+            root        TEXT,  -- shared morphological root (e.g. γράφ for γράφω/γραφή/γραφείο)
+            collocations TEXT,  -- common collocations, pipe-separated (e.g. "λαμβάνω μέτρα|λαμβάνω χώρα")
             created_at  TEXT NOT NULL DEFAULT (datetime('now'))
         );
+
+        -- Word families: groups words sharing a morphological root
+        CREATE TABLE IF NOT EXISTS word_families (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            root        TEXT NOT NULL,  -- the shared root/stem
+            label       TEXT,           -- human-readable label (e.g. "γράφ- (write)")
+            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_word_families_root
+            ON word_families(root);
+
+        CREATE INDEX IF NOT EXISTS idx_words_root
+            ON words(root);
 
         CREATE TABLE IF NOT EXISTS reviews (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -183,11 +199,26 @@ def _init_postgres(conn) -> None:
             example_el      TEXT,
             example_en      TEXT,
             tags            TEXT,
+            root            TEXT,
+            collocations    TEXT,
             created_at      TIMESTAMP NOT NULL DEFAULT NOW()
         );
 
         CREATE UNIQUE INDEX IF NOT EXISTS idx_words_greek
             ON words(greek);
+
+        CREATE TABLE IF NOT EXISTS word_families (
+            id              SERIAL PRIMARY KEY,
+            root            TEXT NOT NULL,
+            label           TEXT,
+            created_at      TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_word_families_root
+            ON word_families(root);
+
+        CREATE INDEX IF NOT EXISTS idx_words_root
+            ON words(root);
 
         CREATE TABLE IF NOT EXISTS reviews (
             id              SERIAL PRIMARY KEY,

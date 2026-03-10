@@ -251,6 +251,31 @@ def load_due_cards(conn, limit: int = 20) -> list[CardState]:
     return cards
 
 
+def get_word_family(conn, word_id: int) -> list[dict]:
+    """Return other words sharing the same root as the given word.
+
+    Returns a list of dicts with id, greek, english for family members
+    (excluding the word itself).
+    """
+    word = fetchone_dict(conn, "SELECT root FROM words WHERE id = ?", (word_id,))
+    if not word or not word.get("root"):
+        return []
+
+    return fetchall_dicts(
+        conn,
+        "SELECT id, greek, english FROM words WHERE root = ? AND id != ?",
+        (word["root"], word_id),
+    )
+
+
+def get_collocations(conn, word_id: int) -> list[str]:
+    """Return collocations for a word as a list of strings."""
+    word = fetchone_dict(conn, "SELECT collocations FROM words WHERE id = ?", (word_id,))
+    if not word or not word.get("collocations"):
+        return []
+    return [c.strip() for c in word["collocations"].split("|") if c.strip()]
+
+
 def get_retention_stats(conn) -> dict:
     """Calculate retention metrics for self-monitoring."""
     # Overall retention rate (% of reviews with quality >= 3)

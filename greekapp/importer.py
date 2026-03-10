@@ -64,8 +64,8 @@ def import_csv(conn, path: Path) -> dict[str, int]:
                     execute(conn, "SAVEPOINT import_row")
                 execute(
                     conn,
-                    """INSERT INTO words (greek, english, part_of_speech, example_el, example_en, tags)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    """INSERT INTO words (greek, english, part_of_speech, example_el, example_en, tags, root, collocations)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         greek,
                         english,
@@ -73,6 +73,8 @@ def import_csv(conn, path: Path) -> dict[str, int]:
                         row.get("example_el", ""),
                         row.get("example_en", ""),
                         row.get("tags", ""),
+                        row.get("root", ""),
+                        row.get("collocations", ""),
                     ),
                 )
                 if use_pg:
