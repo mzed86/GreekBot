@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import greekapp.db as db_module
-from greekapp.db import execute, get_connection, init_db
+from greekapp.db import execute, get_connection, init_db, _migrate, _has_column, _table_exists
 from greekapp.srs import (
     CardState,
     DEFAULT_EASE,
@@ -368,6 +368,87 @@ def test_get_collocations_returns_list():
         # Word with no collocations
         collocations = get_collocations(conn, 2)
         assert collocations == []
+
+        conn.close()
+    finally:
+        db_module.DB_PATH = _ORIG_DB_PATH
+        Path(tmp.name).unlink(missing_ok=True)
+
+
+# --- Migration ---
+
+def test_migrate_adds_missing_columns():
+    """Migration should add root/collocations columns to an existing words table without them."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    db_module.DB_PATH = Path(tmp.name)
+    try:
+        # Create a DB with the OLD schema (no root, no collocations, no word_families)
+        import sqlite3
+        conn_raw = sqlite3.connect(tmp.name)
+        conn_raw.executescript("""
+            CREATE TABLE words (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                greek TEXT NOT NULL,
+                english TEXT NOT NULL,
+                part_of_speech TEXT,
+                example_el TEXT,
+                example_en TEXT,
+                tags TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                word_id INTEGER NOT NULL REFERENCES words(id),
+                reviewed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                quality INTEGER NOT NULL CHECK (quality BETWEEN 0 AND 5),
+                ease_factor REAL NOT NULL,
+                interval REAL NOT NULL,
+                repetition INTEGER NOT NULL
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                direction TEXT NOT NULL,
+                body TEXT NOT NULL,
+                telegram_msg_id INTEGER,
+                target_word_ids TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE profile_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE send_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sent_date TEXT NOT NULL,
+                sent_at TEXT NOT NULL DEFAULT (datetime('now')),
+                message_id INTEGER REFERENCES messages(id)
+            );
+        """)
+        conn_raw.close()
+
+        # Now run init_db which should trigger migration
+        init_db()
+
+        conn = get_connection()
+
+        # Check that new columns and table were added
+        assert _has_column(conn, "words", "root"), "root column should exist after migration"
+        assert _has_column(conn, "words", "collocations"), "collocations column should exist after migration"
+        assert _table_exists(conn, "word_families"), "word_families table should exist after migration"
+
+        # Verify we can use the new columns
+        execute(conn, "INSERT INTO words (greek, english, root, collocations) VALUES (?, ?, ?, ?)",
+                ("γράφω", "write", "γραφ", "γραφή|γραφείο"))
+        conn.commit()
+
+        word = get_word_family(conn, 1)  # No family members yet
+        assert word == []
+
+        collocations = get_collocations(conn, 1)
+        assert len(collocations) == 2
 
         conn.close()
     finally:
