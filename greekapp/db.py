@@ -96,7 +96,7 @@ def execute(conn, sql: str, params=()):
 
 
 def init_db() -> None:
-    """Create all tables if they don't exist."""
+    """Create all tables if they don't exist, and run migrations for schema changes."""
     conn = get_connection()
 
     if _is_postgres():
@@ -104,8 +104,101 @@ def init_db() -> None:
     else:
         _init_sqlite(conn)
 
+    _migrate(conn)
     conn.commit()
     conn.close()
+
+
+def _has_column(conn, table: str, column: str) -> bool:
+    """Check if a column exists in a table (works for both SQLite and PostgreSQL)."""
+    if _is_postgres():
+        row = fetchone_dict(
+            conn,
+            "SELECT 1 AS found FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
+            (table, column),
+        )
+    else:
+        # SQLite: use PRAGMA table_info
+        rows = fetchall_dicts(conn, f"PRAGMA table_info({table})")
+        row = next((r for r in rows if r["name"] == column), None)
+    return row is not None
+
+
+def _table_exists(conn, table: str) -> bool:
+    """Check if a table exists (works for both SQLite and PostgreSQL)."""
+    if _is_postgres():
+        row = fetchone_dict(
+            conn,
+            "SELECT 1 AS found FROM information_schema.tables WHERE table_name = %s",
+            (table,),
+        )
+    else:
+        row = fetchone_dict(
+            conn,
+            "SELECT 1 AS found FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        )
+    return row is not None
+
+
+def _migrate(conn) -> None:
+    """Run schema migrations for columns/tables added after initial release.
+
+    Each migration is idempotent — safe to run multiple times.
+    """
+    # Migration 1: Add 'root' column to words (for word families)
+    if not _has_column(conn, "words", "root"):
+        if _is_postgres():
+            cur = conn.cursor()
+            cur.execute("ALTER TABLE words ADD COLUMN root TEXT")
+            cur.close()
+        else:
+            conn.execute("ALTER TABLE words ADD COLUMN root TEXT")
+
+    # Migration 2: Add 'collocations' column to words
+    if not _has_column(conn, "words", "collocations"):
+        if _is_postgres():
+            cur = conn.cursor()
+            cur.execute("ALTER TABLE words ADD COLUMN collocations TEXT")
+            cur.close()
+        else:
+            conn.execute("ALTER TABLE words ADD COLUMN collocations TEXT")
+
+    # Migration 3: Create word_families table
+    if not _table_exists(conn, "word_families"):
+        if _is_postgres():
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS word_families (
+                    id      SERIAL PRIMARY KEY,
+                    root    TEXT NOT NULL,
+                    label   TEXT,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_word_families_root ON word_families(root)")
+            cur.close()
+        else:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS word_families (
+                    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                    root    TEXT NOT NULL,
+                    label   TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_word_families_root ON word_families(root)")
+
+    # Migration 4: Create index on words.root
+    try:
+        if _is_postgres():
+            cur = conn.cursor()
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_words_root ON words(root)")
+            cur.close()
+        else:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_words_root ON words(root)")
+    except Exception:
+        pass  # Index may already exist
 
 
 def _init_sqlite(conn) -> None:
@@ -122,20 +215,6 @@ def _init_sqlite(conn) -> None:
             collocations TEXT,  -- common collocations, pipe-separated (e.g. "λαμβάνω μέτρα|λαμβάνω χώρα")
             created_at  TEXT NOT NULL DEFAULT (datetime('now'))
         );
-
-        -- Word families: groups words sharing a morphological root
-        CREATE TABLE IF NOT EXISTS word_families (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            root        TEXT NOT NULL,  -- the shared root/stem
-            label       TEXT,           -- human-readable label (e.g. "γράφ- (write)")
-            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_word_families_root
-            ON word_families(root);
-
-        CREATE INDEX IF NOT EXISTS idx_words_root
-            ON words(root);
 
         CREATE TABLE IF NOT EXISTS reviews (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -206,19 +285,6 @@ def _init_postgres(conn) -> None:
 
         CREATE UNIQUE INDEX IF NOT EXISTS idx_words_greek
             ON words(greek);
-
-        CREATE TABLE IF NOT EXISTS word_families (
-            id              SERIAL PRIMARY KEY,
-            root            TEXT NOT NULL,
-            label           TEXT,
-            created_at      TIMESTAMP NOT NULL DEFAULT NOW()
-        );
-
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_word_families_root
-            ON word_families(root);
-
-        CREATE INDEX IF NOT EXISTS idx_words_root
-            ON words(root);
 
         CREATE TABLE IF NOT EXISTS reviews (
             id              SERIAL PRIMARY KEY,
