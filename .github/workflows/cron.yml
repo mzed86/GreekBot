@@ -1,9 +1,11 @@
 name: Greek Bot Cron
 
+# Disabled: Render free database expired. Re-enable schedule when a new
+# DATABASE_URL is configured in GitHub Secrets.
 on:
-  schedule:
-    - cron: '*/20 * * * *'  # Every 20 minutes
-  workflow_dispatch:  # Allow manual trigger
+  # schedule:
+  #   - cron: '*/20 * * * *'  # Every 20 minutes
+  workflow_dispatch:  # Allow manual trigger (will still need a valid DATABASE_URL)
 
 jobs:
   run:
