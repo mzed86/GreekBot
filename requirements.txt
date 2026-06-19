@@ -1,0 +1,14 @@
+# Runtime dependencies for Azure App Service (Oryx installs this; it does not
+# pick up the [deploy] extra from pyproject.toml). Mirrors pyproject.toml's
+# base deps + [deploy] extra. gunicorn intentionally omitted: the app runs as a
+# single-process Flask server (python -m greekapp.server) with an in-process
+# cron thread — multiple gunicorn workers would spawn duplicate cron loops.
+# python-dotenv is omitted too: only greekapp/cli.py uses it, and the server
+# path (server.py -> cron.py) never imports the CLI.
+click>=8.1
+rich>=13.0
+anthropic>=0.40
+httpx>=0.27
+flask>=3.0
+psycopg2-binary>=2.9
+pyyaml>=6.0
